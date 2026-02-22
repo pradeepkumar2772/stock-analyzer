@@ -2,20 +2,38 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import pandas_ta as ta
 import plotly.express as px
 import plotly.graph_objects as go
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 
-# --- 1. FULL NSE SECTOR DEFINITIONS ---
+# --- 1. THE ULTIMATE NSE INDEX REPOSITORY ---
 SECTORS = {
-    "Nifty 50": ["ADANIENT.NS", "ADANIPORTS.NS", "APOLLOHOSP.NS", "ASIANPAINT.NS", "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "BPCL.NS", "BHARTIARTL.NS", "BRITANNIA.NS", "CIPLA.NS", "COALINDIA.NS", "DIVISLAB.NS", "DRREDDY.NS", "EICHERMOT.NS", "GRASIM.NS", "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS", "HEROMOTOCO.NS", "HINDALCO.NS", "HINDUNILVR.NS", "ICICIBANK.NS", "ITC.NS", "INDUSINDBK.NS", "INFY.NS", "JSWSTEEL.NS", "KOTAKBANK.NS", "LTIM.NS", "LT.NS", "M&M.NS", "MARUTI.NS", "NTPC.NS", "NESTLEIND.NS", "ONGC.NS", "POWERGRID.NS", "RELIANCE.NS", "SBILIFE.NS", "SBIN.NS", "SUNPHARMA.NS", "TCS.NS", "TATACONSUM.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "TECHM.NS", "TITAN.NS", "UPL.NS", "ULTRACEMCO.NS", "WIPRO.NS"],
-    "Nifty Bank": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "AUBANK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "PNB.NS", "BANDHANBNK.NS"],
-    "Nifty IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", "TECHM.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS", "LTTS.NS"],
+    "Nifty Auto": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "TVSMOTOR.NS", "HEROMOTOCO.NS", "ASHOKLEY.NS", "BHARATFORG.NS", "BALKRISIND.NS"],
+    "Nifty Bank": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS"],
+    "Nifty Cement": ["ULTRACEMCO.NS", "GRASIM.NS", "AMBUJACEM.NS", "SHREECEM.NS", "ACC.NS", "DALBHARAT.NS", "JKCEMENT.NS", "RAMCOCEM.NS", "INDIACEM.NS"],
+    "Nifty Chemicals": ["PIDILITIND.NS", "SRF.NS", "UPL.NS", "SOLARINDS.NS", "COROMANDEL.NS", "PIIND.NS", "NAVINFLUOR.NS", "TATACHEM.NS", "DEEPAKNTR.NS"],
+    "Nifty Financial Services": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "BAJFINANCE.NS", "AXISBANK.NS", "KOTAKBANK.NS", "BAJAJFINSV.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS"],
+    "Nifty Financial Services Ex-Bank": ["BAJFINANCE.NS", "BAJAJFINSV.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS", "MUTHOOTFIN.NS", "PFC.NS", "RECLTD.NS", "SBI CARD.NS", "HDFCLIFE.NS", "SBILIFE.NS"],
     "Nifty FMCG": ["ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "VBL.NS", "GODREJCP.NS", "DABUR.NS", "TATACONSUM.NS", "MARICO.NS", "COLPAL.NS"],
-    "Nifty Auto": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "HEROMOTOCO.NS", "TVSMOTOR.NS", "ASHOKLEY.NS", "BHARATFORG.NS", "BALKRISIND.NS"],
-    "Nifty Metal": ["TATASTEEL.NS", "HINDALCO.NS", "JSWSTEEL.NS", "JINDALSTEL.NS", "VEDL.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "APLAPOLLO.NS", "RATNAMANI.NS"],
-    "Nifty Pharma": ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "MANKIND.NS", "TORNTPHARM.NS", "ZYDUSLIFE.NS", "LUPIN.NS", "AUROPHARMA.NS", "ALKEM.NS"]
+    "Nifty Healthcare": ["SUNPHARMA.NS", "DIVISLAB.NS", "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "MAXHEALTH.NS", "LUPIN.NS", "FORTIS.NS", "TORNTPHARM.NS"],
+    "Nifty IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", "TECHM.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS"],
+    "Nifty Media": ["SUNTV.NS", "ZEEL.NS", "PVRINOX.NS", "NAZARA.NS", "NETWORK18.NS", "TV18BRDCST.NS", "SAREGAMA.NS", "DBCORP.NS"],
+    "Nifty Metal": ["TATASTEEL.NS", "HINDALCO.NS", "JSWSTEEL.NS", "JINDALSTEL.NS", "VEDL.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS"],
+    "Nifty PSU Bank": ["SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS", "UNIONBANK.NS", "INDIANB.NS", "BANKINDIA.NS", "MAHABANK.NS"],
+    "Nifty Realty": ["DLF.NS", "LODHA.NS", "GODREJPROP.NS", "PHOENIXLTD.NS", "OBEROIRLTY.NS", "PRESTIGE.NS", "BRIGADE.NS", "SOBHA.NS"],
+    "Nifty Consumer Durables": ["TITAN.NS", "DIXON.NS", "HAVELLS.NS", "VOLTAS.NS", "BLUESTARCO.NS", "CROMPTON.NS", "KALYANKJIL.NS", "AMBER.NS"],
+    "Nifty Oil and Gas": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS", "HINDPETRO.NS", "OIL.NS", "PETRONET.NS", "IGL.NS"],
+    "Nifty EV & New Age Auto": ["RELIANCE.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "TVSMOTOR.NS", "TATAMOTORS.NS", "ASHOKLEY.NS"],
+    "Nifty India Defence": ["BEL.NS", "HAL.NS", "SOLARINDS.NS", "MAZDOCK.NS", "BHARATFORG.NS", "BDL.NS", "COCHINSHIP.NS", "GRSE.NS", "DATAPATTNS.NS"],
+    "Nifty India Railways PSU": ["IRFC.NS", "RVNL.NS", "IRCTC.NS", "CONCOR.NS", "RAILTEL.NS", "RITES.NS", "IRCON.NS"],
+    "Nifty India Tourism": ["INDIGO.NS", "INDHOTEL.NS", "IRCTC.NS", "JUBLFOOD.NS", "EIHOTEL.NS", "CHALET.NS", "DEVYANI.NS", "LEMONTREE.NS"],
+    "Nifty CPSE": ["NTPC.NS", "ONGC.NS", "POWERGRID.NS", "COALINDIA.NS", "BEL.NS", "BPCL.NS", "OIL.NS", "NHPC.NS", "SJVN.NS"],
+    "Nifty Infrastructure": ["LT.NS", "RELIANCE.NS", "BHARTIARTL.NS", "ULTRACEMCO.NS", "NTPC.NS", "POWERGRID.NS", "ADANIPORTS.NS", "GRASIM.NS"],
+    "Nifty PSE": ["NTPC.NS", "ONGC.NS", "BEL.NS", "HAL.NS", "POWERGRID.NS", "COALINDIA.NS", "IOC.NS", "BPCL.NS", "IRFC.NS", "PFC.NS"],
+    "Nifty India Digital": ["BHARTIARTL.NS", "TCS.NS", "INFY.NS", "ZOMATO.NS", "PAYTM.NS", "NYKAA.NS", "POLICYBZR.NS", "TATCOMM.NS"],
+    "Nifty SME EMERGE": ["NSE-SME-1.NS", "NSE-SME-2.NS"] # Update with specific SME Tickers if needed
 }
 
 @dataclass
@@ -23,108 +41,69 @@ class Trade:
     symbol: str; direction: str; entry_date: datetime; entry_price: float
     exit_date: datetime = None; exit_price: float = None; exit_reason: str = None; pnl_pct: float = 0.0
 
-# --- 2. BACKTEST ENGINE ---
-def run_scanner_backtest(df, symbol, config, strategy_type):
-    trades = []
-    active_trade = None
+# --- 2. THE ENGINE ---
+def run_scan(df, symbol, strat):
+    # Flatten MultiIndex and Lowercase
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    df.columns = [str(c).lower() for c in df.columns]
     
-    # Calculate Indicators
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
-    df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
-    df['ema_f'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['ema_s'] = df['close'].ewm(span=50, adjust=False).mean()
-    
-    if strategy_type == "RSI 60 Cross":
+    if strat == "RSI 60 Cross":
+        df['rsi'] = ta.rsi(df['close'], length=14)
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
     else: # EMA Ribbon
+        df['ema_f'] = ta.ema(df['close'], length=20)
+        df['ema_s'] = ta.ema(df['close'], length=50)
         df['long_signal'] = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
         df['exit_signal'] = (df['ema_f'] < df['ema_s']) & (df['ema_f'].shift(1) >= df['ema_s'].shift(1))
 
+    trades = []
+    active = None
     for i in range(1, len(df)):
-        current = df.iloc[i]; prev = df.iloc[i-1]
-        if active_trade:
-            sl_hit = current['low'] <= active_trade.entry_price * (0.95) # 5% SL
-            if sl_hit or prev['exit_signal']:
-                active_trade.exit_price = current['open']
-                active_trade.exit_date = current.name
-                active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
-                trades.append(active_trade); active_trade = None
-        elif prev['long_signal']:
-            active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'])
-            
-    return trades, active_trade # Return active_trade to show current status
+        if active:
+            if df['low'].iloc[i] <= active.entry_price * 0.95 or df['exit_signal'].iloc[i-1]:
+                active.exit_price = df['open'].iloc[i]
+                active.pnl_pct = (active.exit_price - active.entry_price) / active.entry_price
+                trades.append(active); active = None
+        elif df['long_signal'].iloc[i-1]:
+            active = Trade(symbol=symbol, direction="Long", entry_date=df.index[i], entry_price=df['open'].iloc[i])
+    return trades, active
 
-# --- 3. UI DASHBOARD ---
-st.set_page_config(layout="wide", page_title="NSE Sector Scanner")
-st.sidebar.title("🎗️ NSE Scanner Pro")
-mode = st.sidebar.radio("App Mode", ["Single Stock Analysis", "Multi-Sector Scanner"])
-strat_choice = st.sidebar.selectbox("Strategy Logic", ["RSI 60 Cross", "EMA Ribbon"])
+# --- 3. UI ---
+st.set_page_config(layout="wide", page_title="Ultimate NSE Scanner")
+st.sidebar.title("🎗️ NSE Index Scanner")
+mode = st.sidebar.radio("Navigation", ["Single Stock", "Multi-Index Scanner"])
+strat_choice = st.sidebar.selectbox("Strategy", ["RSI 60 Cross", "EMA Ribbon"])
 
-if mode == "Multi-Sector Scanner":
-    selected_sector = st.sidebar.selectbox("Choose NSE Sector", list(SECTORS.keys()))
-    period = st.sidebar.selectbox("Backtest Period", ["6 Months", "1 Year", "2 Years"], index=1)
+if mode == "Multi-Index Scanner":
+    selected_idx = st.sidebar.selectbox("Choose Nifty Index", sorted(list(SECTORS.keys())))
+    period = st.sidebar.selectbox("Period", ["1 Year", "2 Years", "5 Years"])
     
-    if st.sidebar.button("🔍 Run Sector Scan"):
-        st.header(f"Results for {selected_sector} ({strat_choice})")
-        
+    if st.sidebar.button("🔍 Execute Scan"):
         results = []
-        days_map = {"6 Months": 180, "1 Year": 365, "2 Years": 730}
-        start_dt = (datetime.now() - timedelta(days=days_map[period])).strftime('%Y-%m-%d')
-        
-        progress_text = st.empty()
         bar = st.progress(0)
+        stocks = SECTORS[selected_idx]
         
-        for idx, sym in enumerate(SECTORS[selected_sector]):
-            progress_text.text(f"Analyzing {sym}...")
-            bar.progress((idx + 1) / len(SECTORS[selected_sector]))
-            
-            data = yf.download(sym, start=start_dt, progress=False)
-            if not data.empty:
-                if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-                data.columns = [str(c).lower() for c in data.columns]
-                
-                trades, active_trade = run_scanner_backtest(data, sym, {}, strat_choice)
-                
-                if trades:
-                    df_t = pd.DataFrame([vars(t) for t in trades])
-                    ret = (1 + df_t['pnl_pct']).prod() - 1
-                    win_r = (len(df_t[df_t['pnl_pct'] > 0]) / len(df_t)) * 100
-                    status = "🟢 Long" if active_trade else "⚪ Waiting"
-                    
-                    results.append({
-                        "Stock": sym,
-                        "Returns %": round(ret * 100, 2),
-                        "Win Rate %": round(win_r, 2),
-                        "Total Trades": len(df_t),
-                        "Current Status": status
-                    })
+        for i, sym in enumerate(stocks):
+            bar.progress((i+1)/len(stocks))
+            try:
+                data = yf.download(sym, period="2y", interval="1d", progress=False)
+                if not data.empty:
+                    trades, active = run_scan(data, sym, strat_choice)
+                    if trades:
+                        df_t = pd.DataFrame([vars(t) for t in trades])
+                        df_t['equity'] = 1000 * (1 + df_t['pnl_pct']).cumprod()
+                        ret = (df_t['equity'].iloc[-1] / 1000 - 1) * 100
+                        wr = (len(df_t[df_t['pnl_pct'] > 0]) / len(df_t)) * 100
+                        results.append({"Stock": sym, "Return %": round(ret, 2), "Win Rate %": round(wr, 2), "Status": "🟢 Long" if active else "⚪ Wait"})
+            except: continue
         
         if results:
-            res_df = pd.DataFrame(results).sort_values(by="Returns %", ascending=False)
+            res_df = pd.DataFrame(results).sort_values("Return %", ascending=False)
+            st.subheader(f"Leaderboard: {selected_idx}")
+            st.table(res_df)
             
-            # Leaderboard Metrics
-            c1, c2, c3 = st.columns(3)
-            best = res_df.iloc[0]
-            c1.metric("Top Performer", best['Stock'], f"{best['Returns %']}%")
-            c2.metric("Avg Sector Return", f"{round(res_df['Returns %'].mean(), 2)}%")
-            c3.metric("Stocks in Long", len(res_df[res_df['Current Status'] == "🟢 Long"]))
-
-            st.divider()
             
-            # Interactive Bar Chart
             
-            fig = px.bar(res_df, x="Stock", y="Returns %", color="Returns %", 
-                         color_continuous_scale='RdYlGn', title=f"Strategy Returns across {selected_sector}")
+            fig = px.bar(res_df, x="Stock", y="Return %", color="Return %", color_continuous_scale="RdYlGn")
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Detailed Table
-            st.subheader("Detailed Scan Report")
-            st.dataframe(res_df, use_container_width=True)
-        else:
-            st.error("Could not fetch data for this sector. Please try again.")
-
-else:
-    st.info("Switch to 'Multi-Sector Scanner' in the sidebar to analyze entire NSE sectors at once.")
