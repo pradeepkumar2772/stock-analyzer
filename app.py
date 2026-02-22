@@ -59,7 +59,7 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="PK Ribbon Master Audit")
+st.set_page_config(layout="wide", page_title="PK Ribbon Audit Pro")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
@@ -78,9 +78,9 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-# THE ULTIMATE FIX: Using unique 'key' to bypass browser/Streamlit range cache errors
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), key="final_start_v1")
-user_end = st.sidebar.date_input("End Date", value=date.today(), key="final_end_v1")
+# THE CRITICAL FIX: Removed min_value to stop the UI range crash
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
+user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Toggles")
@@ -91,13 +91,13 @@ tp_val = st.sidebar.slider("Target %", 1.0, 100.0, 25.0) if use_tp else 0
 use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
-if st.sidebar.button("🚀 Run Master Backtest"):
-    # Date Safety Logic (Runs after button click)
+if st.sidebar.button("🚀 Run Analysis"):
+    # Range safety logic moved inside the button click
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     fetch_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
     if user_start < earliest_allowed:
-        st.info(f"💡 Note: Start date adjusted to {fetch_start} due to {selected_tf_label} limitations.")
+        st.info(f"💡 Note: Start date adjusted to {fetch_start} for {selected_tf_label} limitations.")
     
     try:
         data = yf.download(symbol, start=fetch_start, end=user_end, interval=selected_tf, auto_adjust=True)
@@ -113,7 +113,7 @@ if st.sidebar.button("🚀 Run Master Backtest"):
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
                 
-                # --- CALCULATIONS ---
+                # Performance Math
                 wins = df_trades[df_trades['pnl_pct'] > 0]
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 win_rate = (len(wins) / len(df_trades)) * 100
@@ -127,20 +127,20 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
                 max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
 
-                # Advanced Metrics
+                # Advanced metrics
+                profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
                 avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
                 avg_loss_pct = abs(losses['pnl_pct'].mean() * 100) if not losses.empty else 0.0001
-                profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
                 expectancy = (win_rate/100 * (avg_win_pct/100)) - ((1 - win_rate/100) * (avg_loss_pct/100))
 
-                # CAGR & Drawdown
+                # CAGR & MDD
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
                 cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1 / (years if years > 0 else 1))) - 1) * 100
                 max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
                 # --- DASHBOARD ---
-                st.subheader("📊 Performance Scoreboard")
+                st.subheader("📊 Primary Scoreboard")
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
                 c2.metric("Total Returns (%)", f"{total_ret_pct*100:.2f}%")
@@ -169,11 +169,11 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 cols = st.columns(len(exit_analysis))
                 for idx, row in exit_analysis.iterrows():
                     color = "green" if row['sum'] > 0 else "red"
-                    cols[idx].markdown(f"**{row['exit_reason']}**")
+                    cols[idx].write(f"**{row['exit_reason']}**")
                     cols[idx].write(f"Count: {int(row['count'])}")
-                    cols[idx].write(f"Net P&L: :{color}[{row['sum']*100:.2f}%]")
+                    cols[idx].write(f"Net: :{color}[{row['sum']*100:.2f}%]")
 
-                # --- CHARTS ---
+                # Charts
                 st.divider()
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
@@ -183,6 +183,6 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 
                 st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct', 'duration']], use_container_width=True)
             else:
-                st.warning("No trades generated with current settings.")
+                st.warning("No trades found.")
     except Exception as e:
         st.error(f"Error: {e}")
