@@ -118,17 +118,14 @@ if st.sidebar.button("🚀 Run Backtest"):
                     risk_reward = avg_win / avg_loss
                     expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
                     
-                    # Profit Factor
                     total_profit = wins['pnl_pct'].sum()
                     total_loss = abs(losses['pnl_pct'].sum())
                     profit_factor = total_profit / total_loss if total_loss != 0 else total_profit
                     
-                    # CAGR
                     final_equity = capital * (1 + df_trades['pnl_pct']).cumprod().iloc[-1]
                     years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
-                    cagr = ((final_equity / capital) ** (1 / years) - 1) * 100
+                    cagr = ((final_equity / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
                     
-                    # Drawdown
                     df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                     peak = df_trades['equity'].cummax()
                     mdd = ((df_trades['equity'] - peak) / peak).min() * 100
@@ -162,5 +159,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                     st.download_button(label="📥 Download CSV", data=csv, file_name=f"{symbol}_report.csv", mime='text/csv')
                 else:
                     st.warning("No trades found.")
-        except Exception as e:
-            st.error(f"Error: {e}")
+            else:
+                st.error("No data found.")
+    except Exception as e:
+        st.error(f"Error: {e}")
