@@ -36,8 +36,7 @@ def run_backtest(df, symbol, config):
         current = df.iloc[i]
         prev = df.iloc[i-1]
         if active_trade:
-            sl_hit = False
-            tp_hit = False
+            sl_hit, tp_hit = False, False
             if config['use_sl']:
                 sl_p = active_trade.entry_price * (1 - config['sl_val'] / 100)
                 sl_hit = current['low'] <= sl_p
@@ -60,38 +59,29 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Professional Timeframe Guard Engine")
+st.set_page_config(layout="wide", page_title="Auto-Correcting Backtest Engine")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS")
 
-# TIMEFRAME OPTIONS AND LIMITS (Yahoo Finance Rules)
 tf_limits = {
     "1 Minute": {"val": "1m", "max_days": 7},
-    "2 Minutes": {"val": "2m", "max_days": 59},
     "5 Minutes": {"val": "5m", "max_days": 59},
     "15 Minutes": {"val": "15m", "max_days": 59},
-    "30 Minutes": {"val": "30m", "max_days": 59},
     "1 Hour": {"val": "1h", "max_days": 729},
-    "1 Day": {"val": "1d", "max_days": 18250}, # 50 Years
-    "1 Week": {"val": "1wk", "max_days": 18250},
-    "1 Month": {"val": "1mo", "max_days": 18250}
+    "1 Day": {"val": "1d", "max_days": 20000},
 }
 
-selected_tf_label = st.sidebar.selectbox("Select Timeframe", list(tf_limits.keys()), index=6)
+selected_tf_label = st.sidebar.selectbox("Select Timeframe", list(tf_limits.keys()), index=4)
 selected_tf = tf_limits[selected_tf_label]["val"]
-max_days = tf_limits[selected_tf_label]["max_days"]
-
-# --- TIMEFRAME GUARD NOTIFICATION ---
-if max_days < 1000:
-    suggested_start = date.today() - timedelta(days=max_days)
-    st.sidebar.warning(f"⚠️ **{selected_tf_label} Limit:**\n\nYahoo Finance only provides {selected_tf_label} data for the last **{max_days} days**.\n\n**Please select a Start Date after: {suggested_start}**")
+max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
+# DATE RANGE INPUTS
 fifty_years_ago = date.today() - timedelta(days=50*365)
-start_date = st.sidebar.date_input("Start Date", value=date(2023, 1, 1), min_value=fifty_years_ago)
-end_date = st.sidebar.date_input("End Date", value=date.today())
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
+user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Toggles")
@@ -103,25 +93,30 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Backtest"):
-    # Validation against limits
-    days_diff = (end_date - start_date).days
-    if days_diff > max_days:
-        st.error(f"❌ **Date Range Too Long!**\n\nFor **{selected_tf_label}**, the maximum allowed range is {max_days} days. Your current range is {days_diff} days. Please adjust your Start Date to **{date.today() - timedelta(days=max_days)}** or later.")
-    elif start_date >= end_date:
-        st.error("❌ Start Date must be before End Date.")
+    # --- AUTO-CORRECTION LOGIC ---
+    earliest_allowed = date.today() - timedelta(days=max_days_allowed)
+    final_start = user_start
+    
+    if user_start < earliest_allowed:
+        final_start = earliest_allowed
+        st.info(f"💡 **Auto-Corrected:** Yahoo Finance only allows {max_days_allowed} days for {selected_tf_label}. Start date adjusted to {final_start}.")
+    
+    if final_start >= user_end:
+        st.error("❌ End date must be after the start date. Please check your inputs.")
     else:
         try:
             with st.spinner(f'Fetching {selected_tf_label} data...'):
-                data = yf.download(symbol, start=start_date, end=end_date, interval=selected_tf, auto_adjust=True)
+                data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+                
                 if data.empty:
-                    st.error("No data found. This symbol might not have data for the chosen period.")
+                    st.error("No data returned. Try a different symbol or timeframe.")
                 else:
                     if isinstance(data.columns, pd.MultiIndex):
                         data.columns = data.columns.get_level_values(0)
                     data.columns = [str(col).lower() for col in data.columns]
                     data = data.dropna()
                     
-                    st.success(f"Loaded {len(data)} bars ({selected_tf_label})")
+                    st.success(f"Loaded {len(data)} bars for {symbol}")
                     
                     config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
                     trades, processed_df = run_backtest(data, symbol, config)
@@ -143,11 +138,12 @@ if st.sidebar.button("🚀 Run Backtest"):
                         fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
                         fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20", line=dict(color='yellow', width=1)), row=1, col=1)
                         fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema50'], name="EMA 50", line=dict(color='red', width=1)), row=1, col=1)
+                        
                         df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                         fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='#00ffcc')), row=2, col=1)
+                        
                         fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                         st.plotly_chart(fig, use_container_width=True)
-                        st.subheader("📜 Trade Log")
                         st.dataframe(df_trades)
         except Exception as e:
             st.error(f"Error: {e}")
