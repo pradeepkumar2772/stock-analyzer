@@ -22,7 +22,6 @@ class Trade:
 def run_backtest(df, symbol, config):
     trades = []
     active_trade = None
-    # Apply slippage only if the toggle is ON
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
@@ -48,7 +47,6 @@ def run_backtest(df, symbol, config):
         current = df.iloc[i]
         prev = df.iloc[i-1]
         if active_trade:
-            # Logic: Only check SL/TP if their respective toggles are True
             sl_hit = False
             if config['use_sl']:
                 sl_price = active_trade.entry_price * (1 - config['sl_val'] / 100)
@@ -59,7 +57,6 @@ def run_backtest(df, symbol, config):
                 tp_price = active_trade.entry_price * (1 + config['tp_val'] / 100)
                 tp_hit = current['high'] >= tp_price
             
-            # Exit if SL hit, TP hit, or EMA Cross signal appears
             if sl_hit or tp_hit or prev['exit_signal']:
                 reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "EMA Cross Exit")
                 active_trade.exit_price = current['open'] * (1 - slippage)
@@ -75,15 +72,18 @@ def run_backtest(df, symbol, config):
 # --- 3. STREAMLIT UI ---
 st.set_page_config(layout="wide", page_title="Backtesting Report Pro")
 
+# UPDATED CSS: Darker backgrounds and stronger text for Monthly Returns
 st.markdown("""
     <style>
     .stMetric { background-color: #1a1c24; padding: 20px; border-radius: 8px; border: 1px solid #2d2f3b; }
     .report-table { width: 100%; border-collapse: collapse; background-color: transparent; margin-top: 10px; }
-    .report-table th { background-color: #2d2f3b; color: #888; padding: 12px; border: 1px solid #2d2f3b; font-size: 0.85rem; text-transform: uppercase; }
+    .report-table th { background-color: #2d2f3b; color: #bbb; padding: 12px; border: 1px solid #2d2f3b; font-size: 0.85rem; text-transform: uppercase; }
     .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.9rem; }
-    .profit { background-color: rgba(46, 204, 113, 0.1); color: #2ecc71; font-weight: bold; }
-    .loss { background-color: rgba(231, 76, 60, 0.1); color: #e74c3c; font-weight: bold; }
-    .total-cell { font-weight: bold; color: #3498db; background-color: rgba(52, 152, 219, 0.05); }
+    
+    /* Darker, high-visibility colors */
+    .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; text-shadow: 1px 1px 2px #000; }
+    .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; text-shadow: 1px 1px 2px #000; }
+    .total-cell { font-weight: bold; color: #fff; background-color: #1e3a5f !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -106,13 +106,10 @@ if use_rsi_filter:
 
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Risk Management")
-# Fix: Defining the toggle variables so they can be passed to config
 use_sl = st.sidebar.toggle("Enable Stop Loss", value=True)
 sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0
-
 use_tp = st.sidebar.toggle("Enable Target Profit", value=True)
 tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0
-
 use_slippage = st.sidebar.toggle("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
@@ -123,20 +120,7 @@ if st.sidebar.button("🚀 Generate Full Report"):
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             
-            # Passing all toggle states into the config
-            config = {
-                'use_sl': use_sl, 
-                'sl_val': sl_val, 
-                'use_tp': use_tp, 
-                'tp_val': tp_val, 
-                'use_slippage': use_slippage, 
-                'slippage_val': slippage_val, 
-                'capital': capital, 
-                'use_rsi_filter': use_rsi_filter, 
-                'rsi_mode': rsi_mode, 
-                'rsi_val1': rsi_val1, 
-                'rsi_val2': rsi_val2
-            }
+            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital, 'use_rsi_filter': use_rsi_filter, 'rsi_mode': rsi_mode, 'rsi_val1': rsi_val1, 'rsi_val2': rsi_val2}
             trades, processed_df = run_backtest(data, symbol, config)
 
             if trades:
@@ -144,12 +128,11 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Calculations for Report
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 years = max((df_trades['exit_date'].max() - pd.to_datetime(df_trades['entry_date'].min())).days / 365.25, 0.1)
                 cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1/years)) - 1) * 100
-                peak = df_trades['equity'].cummax(); mdd = ((df_trades['equity'] - peak) / peak).min() * 100
+                peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
 
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 
@@ -170,7 +153,7 @@ if st.sidebar.button("🚀 Generate Full Report"):
 
                     html = "<table class='report-table'><thead><tr><th>Year</th>" + "".join([f"<th>{m}</th>" for m in pivot.columns]) + "</tr></thead><tbody>"
                     for year, row in pivot.iloc[::-1].iterrows():
-                        html += f"<tr><td>{year}</td>"
+                        html += f"<tr><td style='color:#bbb;'>{year}</td>"
                         for col_name, val in row.items():
                             cls = "profit" if val > 0 else ("loss" if val < 0 else "")
                             if col_name == "Total": cls = "total-cell"
@@ -191,7 +174,7 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 with t3:
                     st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve"), use_container_width=True)
                     
-                    st.plotly_chart(px.area(df_trades, x='exit_date', y=(df_trades['equity'] - peak) / peak * 100, title="Drawdown %", color_discrete_sequence=['red']), use_container_width=True)
+                    st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown %", color_discrete_sequence=['red']), use_container_width=True)
                 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
