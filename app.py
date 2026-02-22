@@ -68,7 +68,7 @@ if run:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # RELATIVE STRENGTH
+    # RELATIVE STRENGTh
     st.subheader("Relative Strength vs Benchmark")
 
     rs_df = relative_strength(symbol, benchmark, start, end)
@@ -76,4 +76,4 @@ if run:
 
     # TRADE LOG
     st.subheader("Trade Log")
-    st.dataframe(trade_log)
+    st.dataframe(trade_log) 
