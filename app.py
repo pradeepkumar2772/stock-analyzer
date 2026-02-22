@@ -4,12 +4,10 @@ import numpy as np
 import yfinance as yf
 import pandas_ta as ta
 import plotly.express as px
-import plotly.graph_objects as go
 from dataclasses import dataclass
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 
 # --- 1. THE COMPLETE NIFTY INDEX REPOSITORY ---
-# Mapped with top constituents for each specific index provided in your list
 SECTORS = {
     "Nifty Auto Index": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS", "TVSMOTOR.NS"],
     "Nifty Bank Index": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS", "BANKBARODA.NS"],
@@ -67,22 +65,20 @@ SECTORS = {
     "Nifty500 Shariah Index": ["INFY.NS", "TCS.NS", "HINDUNILVR.NS", "HCLTECH.NS", "ASIANPAINT.NS"],
     "Nifty500 Multicap India Manufacturing 50:30:20 Index": ["RELIANCE.NS", "TATASTEEL.NS", "M&M.NS"],
     "Nifty500 Multicap Infrastructure 50:30:20 Index": ["LT.NS", "RELIANCE.NS", "ULTRACEMCO.NS"],
-    "Nifty SME EMERGE": ["NSE-SME-TOP.NS"], # Representative of top liquid SME stocks
+    "Nifty SME EMERGE": ["NSE-SME-TOP.NS"],
     "Nifty Transportation & Logistics": ["ADANIPORTS.NS", "INDIGO.NS", "TATAMOTORS.NS", "MARUTI.NS", "CONCOR.NS"]
 }
 
 @dataclass
 class Trade:
     symbol: str; direction: str; entry_date: datetime; entry_price: float
-    exit_date: datetime = None; exit_price: float = None; exit_reason: str = None; pnl_pct: float = 0.0
+    exit_date: datetime = None; exit_price: float = None; pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE ---
+# --- 2. THE SCANNER ENGINE ---
 def run_scanner_logic(df, symbol, strat_type):
-    # Robust Column Flattening
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df.columns = [str(c).lower() for c in df.columns]
     
-    # Calculate Indicators
     if strat_type == "RSI 60 Cross":
         df['rsi'] = ta.rsi(df['close'], length=14)
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
@@ -97,7 +93,6 @@ def run_scanner_logic(df, symbol, strat_type):
     active = None
     for i in range(1, len(df)):
         if active:
-            # Fixed 5% Stop Loss for Scanner
             if df['low'].iloc[i] <= active.entry_price * 0.95 or df['exit_signal'].iloc[i-1]:
                 active.exit_price = df['open'].iloc[i]
                 active.exit_date = df.index[i]
@@ -108,58 +103,32 @@ def run_scanner_logic(df, symbol, strat_type):
     return trades, active
 
 # --- 3. UI DASHBOARD ---
-st.set_page_config(layout="wide", page_title="Ultimate Nifty Index Scanner")
-
-st.sidebar.title("🎗️ Global Nifty Scanner")
+st.set_page_config(layout="wide", page_title="Institutional Nifty Scanner")
+st.sidebar.title("🎗️ NSE Index Scanner")
 mode = st.sidebar.radio("Navigation", ["Single Stock View", "Multi-Index Scanner"])
 strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon"])
 
 if mode == "Multi-Index Scanner":
     selected_idx = st.sidebar.selectbox("Choose Nifty Index", sorted(list(SECTORS.keys())))
-    scan_period = st.sidebar.select_slider("Backtest Lookback", options=["1 Year", "2 Years", "3 Years"], value="1 Year")
-    
     if st.sidebar.button("🔍 Execute Full Scan"):
         results = []
         bar = st.progress(0)
         stocks = SECTORS[selected_idx]
-        
         for idx, sym in enumerate(stocks):
             bar.progress((idx+1)/len(stocks))
             try:
-                data = yf.download(sym, period="3y", interval="1d", progress=False)
+                data = yf.download(sym, period="2y", interval="1d", progress=False)
                 if not data.empty:
                     trades, active = run_scanner_logic(data, sym, strat_choice)
                     if trades:
                         df_t = pd.DataFrame([vars(t) for t in trades])
-                        df_t['equity'] = 1000 * (1 + df_t['pnl_pct']).cumprod()
-                        ret = (df_t['equity'].iloc[-1] / 1000 - 1) * 100
+                        ret = (1 + df_t['pnl_pct']).prod() - 1
                         wr = (len(df_t[df_t['pnl_pct'] > 0]) / len(df_t)) * 100
-                        results.append({
-                            "Stock": sym, 
-                            "Return %": round(ret, 2), 
-                            "Win Rate %": round(wr, 2), 
-                            "Total Trades": len(df_t),
-                            "Status": "🟢 Long" if active else "⚪ Wait"
-                        })
+                        results.append({"Stock": sym, "Return %": round(ret * 100, 2), "Win Rate %": round(wr, 2), "Status": "🟢 Long" if active else "⚪ Wait"})
             except: continue
-        
         if results:
             res_df = pd.DataFrame(results).sort_values("Return %", ascending=False)
-            st.subheader(f"Leaderboard: {selected_idx} - {scan_period}")
-            
-            # Key Summary Stats
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Top Gainer", res_df.iloc[0]['Stock'], f"{res_df.iloc[0]['Return %']}%")
-            c2.metric("Avg Returns", f"{round(res_df['Return %'].mean(), 2)}%")
-            c3.metric("Currently Active", len(res_df[res_df['Status'] == "🟢 Long"]))
-            
-            
-            
-            # Chart and Table
-            fig = px.bar(res_df, x="Stock", y="Return %", color="Return %", color_continuous_scale="RdYlGn", title=f"Strategy Return Benchmarking")
+            st.subheader(f"Results: {selected_idx}")
+            st.table(res_df)
+            fig = px.bar(res_df, x="Stock", y="Return %", color="Return %", color_continuous_scale="RdYlGn")
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(res_df, use_container_width=True)
-        else:
-            st.warning("No data found for the selected constituents.")
-else:
-    st.info("Please switch to 'Multi-Index Scanner' in the sidebar to view all 58 Nifty indices.")
