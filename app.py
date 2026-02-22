@@ -62,7 +62,7 @@ def run_backtest(df, symbol, config):
 st.set_page_config(layout="wide", page_title="PK Ribbon Performance Pro")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
-symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
+symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS")
 
 tf_limits = {
     "1 Minute": {"val": "1m", "max_days": 7},
@@ -78,7 +78,9 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
+# DATE RANGE INPUTS (KEPT EXACTLY AS PER YOUR STABLE VERSION)
+fifty_years_ago = date.today() - timedelta(days=50*365)
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
@@ -90,88 +92,78 @@ tp_val = st.sidebar.slider("Target %", 1.0, 100.0, 25.0) if use_tp else 0
 use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
-if st.sidebar.button("🚀 Run Analysis"):
+if st.sidebar.button("🚀 Run Backtest"):
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     final_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
+    if user_start < earliest_allowed:
+        st.info(f"💡 Adjusted Start Date to {final_start} for {selected_tf_label}.")
+
     try:
-        with st.spinner('Calculating Statistics...'):
-            data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
-            if not data.empty:
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
-                data.columns = [str(col).lower() for col in data.columns]
-                data = data.dropna()
+        data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+        
+        if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(col).lower() for col in data.columns]
+            data = data.dropna()
+            
+            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
+            trades, processed_df = run_backtest(data, symbol, config)
+
+            if trades:
+                df_trades = pd.DataFrame([vars(t) for t in trades])
                 
-                config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
-                trades, processed_df = run_backtest(data, symbol, config)
+                # --- CALCULATIONS ---
+                total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
+                wins = df_trades[df_trades['pnl_pct'] > 0]
+                losses = df_trades[df_trades['pnl_pct'] <= 0]
+                win_rate = (len(wins) / len(df_trades)) * 100
+                
+                # CAGR
+                days_diff = (processed_df.index[-1] - processed_df.index[0]).days
+                years = days_diff / 365.25 if days_diff > 0 else 1
+                cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / years) - 1) * 100
+                
+                # Profit Factor & RR
+                avg_win = wins['pnl_pct'].mean() if not wins.empty else 0
+                avg_loss = abs(losses['pnl_pct'].mean()) if not losses.empty else 0.0001
+                risk_reward = avg_win / avg_loss
+                profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
+                
+                # Streaks
+                pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
+                streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
+                max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
+                max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
 
-                if trades:
-                    df_trades = pd.DataFrame([vars(t) for t in trades])
-                    
-                    # --- PERFORMANCE MATH ---
-                    wins = df_trades[df_trades['pnl_pct'] > 0]
-                    losses = df_trades[df_trades['pnl_pct'] <= 0]
-                    win_rate = (len(wins) / len(df_trades)) * 100
-                    
-                    # Streak Logic
-                    pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
-                    streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
-                    max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
-                    max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
-                    
-                    # Return Math
-                    total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
-                    avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
-                    avg_loss_pct = losses['pnl_pct'].mean() * 100 if not losses.empty else 0
-                    
-                    # CAGR & MDD
-                    df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                    years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
-                    cagr = ((df_trades['equity'].iloc[-1] / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
-                    peak = df_trades['equity'].cummax()
-                    mdd = ((df_trades['equity'] - peak) / peak).min() * 100
+                # Drawdown
+                df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+                max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
-                    # --- DASHBOARD UI ---
-                    st.subheader("📊 Professional Strategy Scorecard")
-                    
-                    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-                    r1c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
-                    r1c2.metric("Total Return", f"{total_ret_pct*100:.2f}%")
-                    r1c3.metric("CAGR", f"{cagr:.2f}%")
-                    r1c4.metric("Max Drawdown", f"{mdd:.2f}%")
+                # --- DASHBOARD ---
+                st.subheader("📊 Performance Scorecard")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
+                c2.metric("CAGR", f"{cagr:.2f}%")
+                c3.metric("Success Ratio", f"{win_rate:.1f}%")
+                c4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-                    # NEW TRADE SUMMARY SECTION
-                    st.divider()
-                    st.subheader("📝 Trade Summary & Streaks")
-                    s1, s2, s3, s4 = st.columns(4)
-                    s1.metric("Total Trades", len(df_trades))
-                    s2.metric("Success Ratio", f"{win_rate:.1f}%")
-                    s3.metric("Max Win Streak", f"{max_win_streak} Trades")
-                    s4.metric("Max Loss Streak", f"{max_loss_streak} Trades")
+                st.divider()
+                st.subheader("📝 Trade Summary")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Profit Factor", f"{profit_factor:.2f}")
+                s2.metric("Risk:Reward", f"1:{risk_reward:.2f}")
+                s3.metric("Max Win Streak", f"{max_win_streak}")
+                s4.metric("Max Loss Streak", f"{max_loss_streak}")
 
-                    s5, s6, s7, s8 = st.columns(4)
-                    s5.metric("Avg Win (%)", f"{avg_win_pct:.2f}%")
-                    s6.metric("Avg Loss (%)", f"{avg_loss_pct:.2f}%")
-                    s7.metric("Best Trade (%)", f"{df_trades['pnl_pct'].max()*100:.2f}%")
-                    s8.metric("Worst Trade (%)", f"{df_trades['pnl_pct'].min()*100:.2f}%")
-
-                    # Charts
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20", line=dict(color='yellow')), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema50'], name="EMA 50", line=dict(color='red')), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
-                    fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    st.dataframe(df_trades, use_container_width=True)
-                    
-                    csv = df_trades.to_csv(index=False).encode('utf-8')
-                    st.download_button(label="📥 Download Audit CSV", data=csv, file_name=f"{symbol}_audit.csv", mime='text/csv')
-                else:
-                    st.warning("No trades found.")
-            else:
-                st.error("No data found.")
+                # Chart
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='#00ffcc')), row=2, col=1)
+                fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.dataframe(df_trades)
     except Exception as e:
         st.error(f"Error: {e}")
