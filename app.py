@@ -22,23 +22,20 @@ class Trade:
 def run_backtest(df, symbol, config):
     trades = []
     active_trade = None
+    # Apply slippage only if the toggle is ON
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # Ribbon Indicators
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     
-    # RSI calculation
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    # Entry Logic
     df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
     
-    # RSI Filters
     if config['use_rsi_filter']:
         mode = config['rsi_mode']
         if mode == "Greater Than": df['long_signal'] &= (df['rsi'] > config['rsi_val1'])
@@ -51,8 +48,18 @@ def run_backtest(df, symbol, config):
         current = df.iloc[i]
         prev = df.iloc[i-1]
         if active_trade:
-            sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
-            tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
+            # Logic: Only check SL/TP if their respective toggles are True
+            sl_hit = False
+            if config['use_sl']:
+                sl_price = active_trade.entry_price * (1 - config['sl_val'] / 100)
+                sl_hit = current['low'] <= sl_price
+            
+            tp_hit = False
+            if config['use_tp']:
+                tp_price = active_trade.entry_price * (1 + config['tp_val'] / 100)
+                tp_hit = current['high'] >= tp_price
+            
+            # Exit if SL hit, TP hit, or EMA Cross signal appears
             if sl_hit or tp_hit or prev['exit_signal']:
                 reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "EMA Cross Exit")
                 active_trade.exit_price = current['open'] * (1 - slippage)
@@ -89,7 +96,7 @@ start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
 st.sidebar.divider()
-st.sidebar.subheader("🛡️ RSI & Risk")
+st.sidebar.subheader("🛡️ RSI Filter Settings")
 use_rsi_filter = st.sidebar.toggle("Enable RSI Filter", value=False)
 rsi_mode, rsi_val1, rsi_val2 = "Greater Than", 50.0, 70.0
 if use_rsi_filter:
@@ -97,9 +104,17 @@ if use_rsi_filter:
     rsi_val1 = st.sidebar.number_input("RSI 1", 0.0, 100.0, 50.0)
     if rsi_mode == "Between Range": rsi_val2 = st.sidebar.number_input("RSI 2", 0.0, 100.0, 70.0)
 
-use_sl = st.sidebar.toggle("Stop Loss", True); sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0)
-use_tp = st.sidebar.toggle("Target Profit", True); tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0)
-slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1)
+st.sidebar.divider()
+st.sidebar.subheader("⚙️ Risk Management")
+# Fix: Defining the toggle variables so they can be passed to config
+use_sl = st.sidebar.toggle("Enable Stop Loss", value=True)
+sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0
+
+use_tp = st.sidebar.toggle("Enable Target Profit", value=True)
+tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0
+
+use_slippage = st.sidebar.toggle("Apply Slippage", value=True)
+slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Generate Full Report"):
     try:
@@ -108,7 +123,20 @@ if st.sidebar.button("🚀 Generate Full Report"):
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             
-            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': True, 'slippage_val': slippage_val, 'capital': capital, 'use_rsi_filter': use_rsi_filter, 'rsi_mode': rsi_mode, 'rsi_val1': rsi_val1, 'rsi_val2': rsi_val2}
+            # Passing all toggle states into the config
+            config = {
+                'use_sl': use_sl, 
+                'sl_val': sl_val, 
+                'use_tp': use_tp, 
+                'tp_val': tp_val, 
+                'use_slippage': use_slippage, 
+                'slippage_val': slippage_val, 
+                'capital': capital, 
+                'use_rsi_filter': use_rsi_filter, 
+                'rsi_mode': rsi_mode, 
+                'rsi_val1': rsi_val1, 
+                'rsi_val2': rsi_val2
+            }
             trades, processed_df = run_backtest(data, symbol, config)
 
             if trades:
@@ -116,7 +144,7 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Calculations
+                # Calculations for Report
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 years = max((df_trades['exit_date'].max() - pd.to_datetime(df_trades['entry_date'].min())).days / 365.25, 0.1)
@@ -126,7 +154,6 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 
                 with t1:
-                    # Metric Grid
                     m1, m2, m3 = st.columns(3); m1.metric("Total Returns (%)", f"{total_ret:.2f}%"); m2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%"); m3.metric("Total Trades", len(df_trades))
                     m4, m5, m6 = st.columns(3); m4.metric("Initial Capital", f"{capital:,.2f}"); m5.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); m6.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%")
                     m7, m8, m9 = st.columns(3); m7.metric("Risk-Reward Ratio", f"{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A"); m8.metric("Expectancy", f"{(total_ret/len(df_trades)):.2f}"); m9.metric("Calmer Ratio", f"{abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
