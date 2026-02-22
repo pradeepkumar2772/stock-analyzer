@@ -88,7 +88,6 @@ st.sidebar.divider()
 st.sidebar.subheader("🛡️ RSI Confirmation Filter")
 use_rsi_filter = st.sidebar.toggle("Enable RSI Filter", value=False)
 rsi_mode, rsi_val1, rsi_val2 = "Greater Than", 50.0, 70.0
-
 if use_rsi_filter:
     rsi_mode = st.sidebar.selectbox("Signal if RSI is...", ["Greater Than", "Less Than", "Between Range"])
     if rsi_mode == "Between Range":
@@ -113,12 +112,7 @@ if st.sidebar.button("🚀 Run Full Strategy Lab"):
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             
-            config = {
-                'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 
-                'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital,
-                'use_rsi_filter': use_rsi_filter, 'rsi_mode': rsi_mode, 
-                'rsi_val1': rsi_val1, 'rsi_val2': rsi_val2
-            }
+            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital, 'use_rsi_filter': use_rsi_filter, 'rsi_mode': rsi_mode, 'rsi_val1': rsi_val1, 'rsi_val2': rsi_val2}
             trades, processed_df = run_backtest(data, symbol, config)
 
             if trades:
@@ -126,12 +120,12 @@ if st.sidebar.button("🚀 Run Full Strategy Lab"):
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 
-                # --- SCOREBOARD ---
-                st.subheader("📊 Primary Scoreboard")
+                # --- 1. PRIMARY SCOREBOARD ---
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 peak = df_trades['equity'].cummax()
                 mdd = ((df_trades['equity'] - peak) / peak).min() * 100
                 
+                st.subheader("📊 Performance Scoreboard")
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
                 c2.metric("Total Return", f"{total_ret:.2f}%")
@@ -139,7 +133,7 @@ if st.sidebar.button("🚀 Run Full Strategy Lab"):
                 c4.metric("Max Drawdown", f"{mdd:.2f}%")
                 c5.metric("Recovery Factor", f"{abs(total_ret/mdd):.2f}" if mdd != 0 else "N/A")
 
-                # --- TRADE SUMMARY ---
+                # --- 2. FULL TRADE SUMMARY & STREAKS ---
                 st.divider()
                 st.subheader("📝 Trade Summary & Analytics")
                 wins = df_trades[df_trades['pnl_pct'] > 0]
@@ -153,22 +147,31 @@ if st.sidebar.button("🚀 Run Full Strategy Lab"):
                 s3.metric("Max Win Streak", f"{streak[pnl_bool == 1].max() if not wins.empty else 0}")
                 s4.metric("Max Loss Streak", f"{streak[pnl_bool == 0].max() if not losses.empty else 0}")
 
-                # --- CHARTS ---
+                s5, s6, s7, s8 = st.columns(4)
+                df_trades['duration'] = df_trades['exit_date'] - pd.to_datetime(df_trades['entry_date'])
+                s5.metric("Avg Holding Period", str(df_trades['duration'].mean()).split('.')[0])
+                s6.metric("Expectancy", f"{( (total_ret/100) / len(df_trades) )*100:.2f}%")
+                s7.metric("Avg Win (%)", f"{(wins['pnl_pct'].mean()*100):.2f}%")
+                s8.metric("Avg Loss (%)", f"{(losses['pnl_pct'].mean()*100):.2f}%")
+
+                s9, s10, s11, s12 = st.columns(4)
+                s9.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
+                s10.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
+                s11.metric("Total Trades", len(df_trades))
+                s12.metric("Final Capital", f"₹{df_trades['equity'].iloc[-1]:,.0f}")
+
+                # --- 3. CHARTS ---
                 st.divider()
                 st.subheader("🕯️ Technical Audit")
-                # Removed RSI row, back to 2 rows
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                
                 fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['entry_date'], y=df_trades['entry_price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00ff00'), name="Buy"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['exit_price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='#ff0000'), name="Sell"), row=1, col=1)
-                
-                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
-                
+                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
                 fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct']], use_container_width=True)
+                st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct', 'duration']], use_container_width=True)
             else:
                 st.warning("No trades found.")
     except Exception as e:
