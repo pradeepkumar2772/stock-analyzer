@@ -25,12 +25,10 @@ def run_backtest(df, symbol, config):
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # EMA Logic
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     
-    # Signal Logic
     df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
     df['exit_signal'] = (df['ema20'] < df['ema30']) & (df['ema20'].shift(1) >= df['ema30'].shift(1))
 
@@ -51,8 +49,8 @@ def run_backtest(df, symbol, config):
                 reason = "Stop Loss" if sl_hit else ("Target" if tp_hit else "EMA Cross Exit")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
-                active_trade.exit_reason = reason
                 active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
+                active_trade.exit_reason = reason
                 trades.append(active_trade)
                 active_trade = None
         elif prev['long_signal']:
@@ -65,8 +63,12 @@ st.set_page_config(layout="wide", page_title="PK Ribbon Backtester")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 
-# --- REVERTED SYMBOL INPUT ---
-symbol = st.sidebar.text_input("Enter Symbol (e.g. RELIANCE.NS, ^NSEI, AAPL)", value="RELIANCE.NS").upper()
+# TICKER REFERENCE TABLE
+with st.sidebar.expander("📖 Ticker Cheat Sheet"):
+    st.code("Nifty 50: ^NSEI\nBank Nifty: ^NSEBANK\nSensex: ^BSESN\nS&P 500: ^GSPC\nGold: GC=F\nReliance: RELIANCE.NS")
+
+# REVERTED SYMBOL INPUT
+symbol = st.sidebar.text_input("Enter Symbol", value="RELIANCE.NS").upper()
 
 # TIMEFRAME OPTIONS
 tf_limits = {
@@ -81,8 +83,10 @@ selected_tf = tf_limits[selected_tf_label]["val"]
 max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
-user_end = st.sidebar.date_input("End Date", value=date.today())
+
+# DATE INPUTS WITH WIDER ALLOWED RANGE
+start_date = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
+end_date = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Settings")
@@ -96,14 +100,14 @@ slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage el
 if st.sidebar.button("🚀 Run Backtest"):
     # Auto-Correction for Date Range
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
-    final_start = user_start if user_start >= earliest_allowed else earliest_allowed
+    final_start = start_date if start_date >= earliest_allowed else earliest_allowed
     
-    if user_start < earliest_allowed:
-        st.info(f"💡 Adjusted Start Date to {final_start} due to {selected_tf_label} data limits.")
+    if start_date < earliest_allowed:
+        st.info(f"💡 Adjusted Start Date to {final_start} for {selected_tf_label} data.")
 
     try:
         with st.spinner(f'Fetching Data for {symbol}...'):
-            data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+            data = yf.download(symbol, start=final_start, end=end_date, interval=selected_tf, auto_adjust=True)
             if not data.empty:
                 if isinstance(data.columns, pd.MultiIndex):
                     data.columns = data.columns.get_level_values(0)
@@ -115,9 +119,10 @@ if st.sidebar.button("🚀 Run Backtest"):
                 if trades:
                     df_trades = pd.DataFrame([vars(t) for t in trades])
                     
-                    # Metrics
+                    # Dashboard
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("Total Return", f"{((df_trades['pnl_pct'] + 1).prod() - 1)*100:.1f}%")
+                    total_ret = ((df_trades['pnl_pct'] + 1).prod() - 1) * 100
+                    m1.metric("Total Return", f"{total_ret:.1f}%")
                     m2.metric("Win Rate", f"{(len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100:.1f}%")
                     m3.metric("Trades", len(df_trades))
 
@@ -132,22 +137,15 @@ if st.sidebar.button("🚀 Run Backtest"):
                     fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # Trade Log
                     st.subheader("📜 Trade History")
                     st.dataframe(df_trades, use_container_width=True)
 
-                    # Export to CSV
-                    st.divider()
+                    # Export
                     csv = df_trades.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Trade Log as CSV",
-                        data=csv,
-                        file_name=f"{symbol}_{selected_tf}_backtest.csv",
-                        mime='text/csv',
-                    )
+                    st.download_button(label="📥 Download Trade Log as CSV", data=csv, file_name=f"{symbol}_backtest.csv", mime='text/csv')
                 else:
                     st.warning("No trades generated.")
             else:
-                st.error("No data found. Check ticker spelling.")
+                st.error("No data found. Check ticker.")
     except Exception as e:
         st.error(f"Error: {e}")
