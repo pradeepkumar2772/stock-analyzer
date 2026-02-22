@@ -19,30 +19,29 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. BACKTEST ENGINE ---
+# --- 2. BACKTEST ENGINE (RSI CROSS LOGIC) ---
 def run_backtest(df, symbol, config):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
+    # Technical Indicators
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     
+    # RSI calculation
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
+    # NEW RSI CROSS LOGIC
+    # Entry: RSI crosses 60 from below to above
+    df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
     
-    if config['use_rsi_filter']:
-        mode = config['rsi_mode']
-        if mode == "Greater Than": df['long_signal'] &= (df['rsi'] > config['rsi_val1'])
-        elif mode == "Less Than": df['long_signal'] &= (df['rsi'] < config['rsi_val1'])
-        elif mode == "Between Range": df['long_signal'] &= (df['rsi'] >= config['rsi_val1']) & (df['rsi'] <= config['rsi_val2'])
-        
-    df['exit_signal'] = (df['ema20'] < df['ema30']) & (df['ema20'].shift(1) >= df['ema30'].shift(1))
+    # Exit: RSI crosses 60 from above to below
+    df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
 
     for i in range(1, len(df)):
         current = df.iloc[i]
@@ -56,7 +55,7 @@ def run_backtest(df, symbol, config):
                 tp_hit = current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
             
             if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
+                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "RSI Cross Down")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -68,7 +67,7 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Institutional Backtesting Report")
+st.set_page_config(layout="wide", page_title="RSI 60 Cross Strategy Lab")
 
 st.markdown("""
     <style>
@@ -82,7 +81,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.title("🎗️ PK Ribbon Engine")
+st.sidebar.title("🎗️ RSI 60 Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
 tf_limits = {"Daily": "1d", "1 Hour": "1h", "15 Minutes": "15m", "5 Minutes": "5m"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_limits.keys()))
@@ -91,14 +90,7 @@ start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
 st.sidebar.divider()
-st.sidebar.subheader("🛡️ RSI & Risk Settings")
-use_rsi_filter = st.sidebar.toggle("Enable RSI Filter", value=False)
-rsi_mode, rsi_val1, rsi_val2 = "Greater Than", 50.0, 70.0
-if use_rsi_filter:
-    rsi_mode = st.sidebar.selectbox("RSI Mode", ["Greater Than", "Less Than", "Between Range"])
-    rsi_val1 = st.sidebar.number_input("RSI 1", 0.0, 100.0, 50.0)
-    if rsi_mode == "Between Range": rsi_val2 = st.sidebar.number_input("RSI 2", 0.0, 100.0, 70.0)
-
+st.sidebar.subheader("⚙️ Risk Management")
 use_sl = st.sidebar.toggle("Enable Stop Loss", value=True)
 sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0
 use_tp = st.sidebar.toggle("Enable Target Profit", value=True)
@@ -106,14 +98,15 @@ tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0
 use_slippage = st.sidebar.toggle("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
-if st.sidebar.button("🚀 Generate Full Report"):
+if st.sidebar.button("🚀 Generate RSI Strategy Report"):
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_limits[selected_tf], auto_adjust=True)
         if not data.empty:
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             
-            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital, 'use_rsi_filter': use_rsi_filter, 'rsi_mode': rsi_mode, 'rsi_val1': rsi_val1, 'rsi_val2': rsi_val2}
+            # Note: RSI filter toggle removed as RSI is now the primary driver
+            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital, 'use_rsi_filter': False}
             trades, processed_df = run_backtest(data, symbol, config)
 
             if trades:
@@ -162,23 +155,24 @@ if st.sidebar.button("🚀 Generate Full Report"):
                         st.write(f"**Avg Win:** {wins['pnl_pct'].mean()*100:.2f}%")
                         st.write(f"**Avg Loss:** {losses['pnl_pct'].mean()*100:.2f}%")
                     with col_charts:
-                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve (RSI 60 Cross Strategy)", color_discrete_sequence=['#3498db']), use_container_width=True)
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown (Long)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    # --- UPDATED PERCENTAGE CHARTS ---
-                    st.subheader("1. Return by Period")
+                    st.subheader("1. Return by Period (%)")
                     yearly_ret = df_trades.groupby('year')['pnl_pct'].sum() * 100
                     fig_period = go.Figure(data=[go.Bar(
                         x=yearly_ret.index, 
                         y=yearly_ret.values,
                         text=yearly_ret.values.round(1),
-                        texttemplate='%{text}%', # Formats as %
-                        textposition='outside', # Forced outside the bar
+                        texttemplate='%{text}%',
+                        textposition='outside',
                         textfont=dict(color='white'),
                         marker_color='#3498db'
                     )])
-                    fig_period.update_layout(title="Return by Period (%)", template="plotly_dark", height=500, yaxis_title="Values (%)")
+                    # Adding the Zero Line
+                    fig_period.add_hline(y=0, line_dash="solid", line_color="white", line_width=1)
+                    fig_period.update_layout(template="plotly_dark", height=500, yaxis_title="Values (%)")
                     st.plotly_chart(fig_period, use_container_width=True)
                     st.divider()
 
@@ -195,42 +189,12 @@ if st.sidebar.button("🚀 Generate Full Report"):
                         ))
                     fig_wl.update_layout(barmode='group', template="plotly_dark", height=500, yaxis_title="Count")
                     st.plotly_chart(fig_wl, use_container_width=True)
-                    st.divider()
-
-                    st.subheader("3. Exit Distribution")
-                    exit_stats = df_trades['exit_reason'].value_counts(normalize=True) * 100
-                    fig_exits = go.Figure(data=[go.Bar(
-                        x=exit_stats.index, y=exit_stats.values,
-                        text=exit_stats.values.astype(int),
-                        texttemplate='%{text}%', textposition='outside',
-                        textfont=dict(color='white'), marker_color='#3498db'
-                    )])
-                    fig_exits.update_layout(template="plotly_dark", height=400, yaxis_title="Percentage (%)")
-                    st.plotly_chart(fig_exits, use_container_width=True)
-                    st.divider()
-
-                    st.subheader("4. Trades by Day of the Week")
-                    df_trades['day'] = df_trades['exit_date'].dt.day_name()
-                    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-                    day_data = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
-                    day_data.columns = ['Losers', 'Winners']
-                    day_data['Total'] = day_data['Winners'] + day_data['Losers']
-                    day_data = day_data.reindex(day_order)
-
-                    fig_day = go.Figure()
-                    for col, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
-                        fig_day.add_trace(go.Bar(
-                            x=day_data.index, y=day_data[col], name=col, marker_color=color,
-                            text=day_data[col], textposition='outside', textfont=dict(color='white')
-                        ))
-                    fig_day.update_layout(barmode='group', template="plotly_dark", height=500, yaxis_title="Count")
-                    st.plotly_chart(fig_day, use_container_width=True)
 
                 with t4:
                     st.subheader("Trade Audit Log")
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
 
             else:
-                st.warning("No trades found.")
+                st.warning("No trades found for RSI 60 Cross strategy.")
     except Exception as e:
         st.error(f"Error: {e}")
