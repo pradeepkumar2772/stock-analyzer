@@ -31,14 +31,12 @@ def run_backtest(df, symbol, config):
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     
-    # Simple RSI calculation (No extra libraries needed)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
     
-    # Entry Logic
     df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
     if config['use_rsi_filter']:
         df['long_signal'] &= (df['rsi'] > 50)
@@ -102,57 +100,71 @@ if st.sidebar.button("🚀 Run Full Strategy Lab"):
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 
-                # --- SCOREBOARD ---
-                st.subheader("📊 Performance Scoreboard")
-                c1, c2, c3, c4 = st.columns(4)
+                # --- 1. PRIMARY SCOREBOARD ---
+                st.subheader("📊 Primary Scoreboard")
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
-                c1.metric("Total Return (%)", f"{total_ret:.2f}%")
-                c2.metric("Win Rate", f"{(len(df_trades[df_trades['pnl_pct']>0])/len(df_trades)*100):.1f}%")
-                
                 peak = df_trades['equity'].cummax()
                 mdd = ((df_trades['equity'] - peak) / peak).min() * 100
-                c3.metric("Max Drawdown", f"{mdd:.2f}%")
                 
-                recovery_factor = abs(total_ret / mdd) if mdd != 0 else 0
-                c4.metric("Recovery Factor", f"{recovery_factor:.2f}")
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
+                c2.metric("Total Return", f"{total_ret:.2f}%")
+                c3.metric("Win Rate", f"{(len(df_trades[df_trades['pnl_pct']>0])/len(df_trades)*100):.1f}%")
+                c4.metric("Max Drawdown", f"{mdd:.2f}%")
+                c5.metric("Recovery Factor", f"{abs(total_ret/mdd):.2f}" if mdd != 0 else "N/A")
 
-                # --- NEW: MONTHLY HEATMAP (PLOTLY VERSION) ---
+                # --- 2. RESTORED TRADE SUMMARY & ANALYTICS ---
                 st.divider()
-                st.subheader("🗓️ Monthly Performance Heatmap")
-                df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
-                df_trades['year'] = df_trades['exit_date'].dt.year
-                heatmap_data = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
+                st.subheader("📝 Trade Summary & Analytics")
+                wins = df_trades[df_trades['pnl_pct'] > 0]
+                losses = df_trades[df_trades['pnl_pct'] <= 0]
                 
-                # Sort months correctly
-                months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                heatmap_data = heatmap_data.reindex(columns=[m for m in months_order if m in heatmap_data.columns])
+                # Streak Logic
+                pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
+                streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
                 
-                fig_heat = px.imshow(heatmap_data, text_auto=".2f", color_continuous_scale='RdYlGn', aspect="auto", labels=dict(color="P&L %"))
-                st.plotly_chart(fig_heat, use_container_width=True)
-                
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Profit Factor", f"{(wins['pnl_pct'].sum()/abs(losses['pnl_pct'].sum())):.2f}" if not losses.empty else "N/A")
+                s2.metric("Risk:Reward", f"1:{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A")
+                s3.metric("Max Win Streak", f"{streak[pnl_bool == 1].max() if not wins.empty else 0}")
+                s4.metric("Max Loss Streak", f"{streak[pnl_bool == 0].max() if not losses.empty else 0}")
 
-                # --- NEW: PROFIT BY DAY OF WEEK ---
-                st.subheader("📅 Profit by Day of Week")
-                df_trades['day'] = df_trades['exit_date'].dt.day_name()
-                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-                day_stats = df_trades.groupby('day')['pnl_pct'].sum().reindex(day_order).fillna(0) * 100
-                fig_day = px.bar(x=day_stats.index, y=day_stats.values, labels={'x': 'Day', 'y': 'Total P&L %'}, color=day_stats.values, color_continuous_scale='RdYlGn')
-                st.plotly_chart(fig_day, use_container_width=True)
+                s5, s6, s7, s8 = st.columns(4)
+                df_trades['duration'] = df_trades['exit_date'] - pd.to_datetime(df_trades['entry_date'])
+                s5.metric("Avg Holding Period", str(df_trades['duration'].mean()).split('.')[0])
+                s6.metric("Expectancy", f"{( (total_ret/100) / len(df_trades) )*100:.2f}%")
+                s7.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
+                s8.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
 
-                # --- TECHNICAL CHART WITH MARKERS ---
+                # --- 3. HEATMAP & DAY ANALYSIS ---
                 st.divider()
-                st.subheader("🕯️ Technical Audit & Visual Signals")
+                h1, h2 = st.columns([2, 1])
+                with h1:
+                    st.subheader("🗓️ Monthly Performance Heatmap")
+                    df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
+                    df_trades['year'] = df_trades['exit_date'].dt.year
+                    heatmap_data = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
+                    months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    heatmap_data = heatmap_data.reindex(columns=[m for m in months_order if m in heatmap_data.columns])
+                    st.plotly_chart(px.imshow(heatmap_data, text_auto=".2f", color_continuous_scale='RdYlGn', labels=dict(color="P&L %")), use_container_width=True)
+                
+                with h2:
+                    st.subheader("📅 Profit by Day")
+                    day_stats = df_trades.groupby(df_trades['exit_date'].dt.day_name())['pnl_pct'].sum().reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']).fillna(0) * 100
+                    st.plotly_chart(px.bar(x=day_stats.index, y=day_stats.values, color=day_stats.values, color_continuous_scale='RdYlGn'), use_container_width=True)
+
+                # --- 4. CHARTS ---
+                st.divider()
+                st.subheader("🕯️ Technical Audit & Signals")
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
-                
-                fig.add_trace(go.Scatter(x=df_trades['entry_date'], y=df_trades['entry_price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00ff00'), name="Buy Signal"), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['exit_price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='#ff0000'), name="Sell Signal"), row=1, col=1)
-                
+                fig.add_trace(go.Scatter(x=df_trades['entry_date'], y=df_trades['entry_price'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00ff00'), name="Buy"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['exit_price'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='#ff0000'), name="Sell"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
                 fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct']])
+                st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct', 'duration']], use_container_width=True)
             else:
                 st.warning("No trades found.")
     except Exception as e:
