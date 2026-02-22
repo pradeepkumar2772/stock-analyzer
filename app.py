@@ -16,152 +16,117 @@ class Trade:
     entry_price: float
     exit_date: datetime = None
     exit_price: float = None
-    exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE (Locked Logic) ---
-def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
+# --- 2. MULTI-STRATEGY ENGINE (Locked for Consistency) ---
+def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
+    # Ensure slippage is a decimal (0.1% -> 0.001)
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    df['long_signal'] = False
-    df['exit_signal'] = False
-    
-    # INDICATOR PROTECTION: Uses pre-calculated EMAs if provided by Optimizer
-    if 'ema_15_pk' not in df.columns:
-        df['ema_15_pk'] = df['close'].ewm(span=15, adjust=False).mean()
+    # Use pre-calculated columns if they exist (to allow Optimizer to override)
     if 'ema_20_pk' not in df.columns:
         df['ema_20_pk'] = df['close'].ewm(span=20, adjust=False).mean()
+    if 'ema_15_pk' not in df.columns:
+        df['ema_15_pk'] = df['close'].ewm(span=15, adjust=False).mean()
 
-    # Strategy Selection
+    # Signals
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20_pk'].shift(1)) & (df['close'] > df['ema_20_pk'])
         df['exit_signal'] = (df['close'] < df['ema_15_pk'])
-    elif strategy_type == "RSI 60 Cross":
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
-        df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
-        df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
-        df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
 
     for i in range(1, len(df)):
-        current = df.iloc[i]; prev = df.iloc[i-1]
+        current = df.iloc[i]
+        prev = df.iloc[i-1]
+        
         if active_trade:
             sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
             if sl_hit or prev['exit_signal']:
+                # Applying slippage to the exit price
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
-                trades.append(active_trade); active_trade = None
+                trades.append(active_trade)
+                active_trade = None
         elif prev['long_signal']:
-            active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
-    return trades, df
+            # Applying slippage to the entry price
+            active_trade = Trade(
+                symbol=symbol, 
+                direction="Long", 
+                entry_date=current.name, 
+                entry_price=current['open'] * (1 + slippage)
+            )
+    return trades
 
-# --- 3. OPTIMIZER ENGINE ---
+# --- 3. THE OPTIMIZER MODULE ---
 def run_pk_optimizer(data, symbol, config, capital):
     results = []
     ema_range = range(3, 61, 3) 
-    prog = st.progress(0); steps = len(ema_range)**2; curr = 0
+    prog = st.progress(0)
+    steps = len(ema_range)**2
+    curr = 0
     
     for entry in ema_range:
         for ex in ema_range:
             curr += 1
             if entry <= ex: continue
+            
             df_opt = data.copy()
             df_opt['ema_20_pk'] = df_opt['close'].ewm(span=entry, adjust=False).mean()
             df_opt['ema_15_pk'] = df_opt['close'].ewm(span=ex, adjust=False).mean()
             
-            t, _ = run_backtest(df_opt, symbol, config, "PK Strategy (Positional)")
+            t = run_backtest(df_opt, symbol, config, "PK Strategy (Positional)")
+            
             if t:
                 df_res = pd.DataFrame([vars(tr) for tr in t])
+                # COMPOUNDING FORMULA (Matches Backtester exactly)
                 df_res['equity'] = capital * (1 + df_res['pnl_pct']).cumprod()
                 f_ret = ((df_res['equity'].iloc[-1] / capital) - 1) * 100
                 pk = df_res['equity'].cummax()
                 mdd = ((df_res['equity'] - pk) / pk).min() * 100
                 rf = f_ret / abs(mdd) if mdd != 0 else f_ret
+                
                 results.append({"Entry": entry, "Exit": ex, "Return %": round(f_ret, 2), "Max DD %": round(mdd, 2), "RF": round(rf, 2)})
             if curr % 50 == 0: prog.progress(curr/steps)
     prog.empty()
     return pd.DataFrame(results)
 
-# --- 4. SIDEBAR ---
-st.sidebar.title("🎗️ Strategy Engine")
-symbol_input = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").strip().upper()
-strat_choice = st.sidebar.selectbox("Strategy", ["PK Strategy (Positional)", "RSI 60 Cross"])
-tf_map = {"Daily": "1d", "Weekly": "1wk"}
-selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=0)
-capital = st.sidebar.number_input("Initial Capital", value=1000.0)
-start_str = st.sidebar.text_input("Start Date", value="2010-01-01")
-end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
-
-config = {'sl_val': 5.0, 'use_sl': True, 'use_slippage': True, 'slippage_val': 0.1, 'use_rsav': False}
-
-col1, col2, col3 = st.sidebar.columns(3)
-run_single = col1.button("🚀 Backtest")
-run_arena = col2.button("🏟️ Arena")
-run_opt = col3.button("🎯 Optimizer")
-
-# --- 5. EXECUTION (Fixed Error Line) ---
+# --- 4. EXECUTION ---
+# (Assumes standard sidebar inputs for symbol_input, start_str, end_str, selected_tf, capital)
 if run_single or run_arena or run_opt:
-    # SAFETY GUARD: Check if symbol is valid before downloading
-    if not symbol_input:
-        st.error("Please enter a valid stock symbol (e.g., RELIANCE.NS)")
-    else:
-        try:
-            # Shared Data Fetch (Line 154 fix)
-            data = yf.download(symbol_input, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
-            
-            if not data.empty:
-                if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-                data.columns = [str(col).lower() for col in data.columns]
-                
-                # Baseline for all calculations
-                baseline_df = data.copy()
-                baseline_df['ema_20_pk'] = baseline_df['close'].ewm(span=20, adjust=False).mean()
-                baseline_df['ema_15_pk'] = baseline_df['close'].ewm(span=15, adjust=False).mean()
+    data = yf.download(symbol_input, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
+    if not data.empty:
+        # Clean columns
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
+        data.columns = [str(col).lower() for col in data.columns]
+        
+        # SHARED CALCULATION (Sync Point)
+        baseline_df = data.copy()
+        baseline_df['ema_20_pk'] = baseline_df['close'].ewm(span=20, adjust=False).mean()
+        baseline_df['ema_15_pk'] = baseline_df['close'].ewm(span=15, adjust=False).mean()
 
-                if run_single:
-                    trades, _ = run_backtest(baseline_df, symbol_input, config, strat_choice)
-                    if trades:
-                        df = pd.DataFrame([vars(t) for t in trades])
-                        df['equity'] = capital * (1 + df['pnl_pct']).cumprod()
-                        ret = ((df['equity'].iloc[-1]/capital)-1)*100
-                        st.metric("Total Return", f"{ret:.2f}%")
-                        st.plotly_chart(px.line(df, x='exit_date', y='equity', title=f"Equity Curve: {strat_choice}"), use_container_width=True)
-                    else: st.warning("No trades found.")
+        if run_single:
+            t = run_backtest(baseline_df, symbol_input, config, strat_choice)
+            if t:
+                df = pd.DataFrame([vars(tr) for tr in t])
+                df['equity'] = capital * (1 + df['pnl_pct']).cumprod()
+                ret = ((df['equity'].iloc[-1]/capital)-1)*100
+                st.metric("Unified Return", f"{ret:.2f}%")
+                st.plotly_chart(px.line(df, x='exit_date', y='equity', title="Matched Equity Curve"), use_container_width=True)
 
-                elif run_arena:
-                    arena_results = []
-                    for s in ["PK Strategy (Positional)", "RSI 60 Cross"]:
-                        t, _ = run_backtest(baseline_df.copy(), symbol_input, config, s)
-                        if t:
-                            df_a = pd.DataFrame([vars(tr) for tr in t])
-                            df_a['equity'] = capital * (1 + df_a['pnl_pct']).cumprod()
-                            res = ((df_a['equity'].iloc[-1] / capital) - 1) * 100
-                        else: res = 0
-                        arena_results.append({"Strategy": s, "Return %": round(res, 2)})
-                    st.table(pd.DataFrame(arena_results).sort_values(by="Return %", ascending=False))
+        elif run_opt:
+            # Baseline Check
+            t_base = run_backtest(baseline_df.copy(), symbol_input, config, "PK Strategy (Positional)")
+            b_ret = 0.0
+            if t_base:
+                df_b = pd.DataFrame([vars(tr) for tr in t_base])
+                df_b['equity'] = capital * (1 + df_b['pnl_pct']).cumprod()
+                b_ret = ((df_b['equity'].iloc[-1] / capital) - 1) * 100
 
-                elif run_opt:
-                    b_trades, _ = run_backtest(baseline_df.copy(), symbol_input, config, "PK Strategy (Positional)")
-                    b_ret = 0.0
-                    if b_trades:
-                        b_df = pd.DataFrame([vars(t) for t in b_trades])
-                        b_df['equity'] = capital * (1 + b_df['pnl_pct']).cumprod()
-                        b_ret = ((b_df['equity'].iloc[-1] / capital) - 1) * 100
-
-                    opt_df = run_pk_optimizer(data, symbol_input, config, capital)
-                    if not opt_df.empty:
-                        best = opt_df.loc[opt_df['RF'].idxmax()]
-                        st.subheader(f"🎯 Optimization Summary: {symbol_input}")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("Original Baseline (20/15)", f"{b_ret:.2f}%")
-                        c2.metric("Best Optimized", f"{best['Return %']:.2f}%", delta=f"{best['Return %'] - b_ret:.2f}%")
-                        c3.metric("Best Combo", f"{best['Entry']} / {best['Exit']}")
-                        st.dataframe(opt_df.sort_values(by="RF", ascending=False).head(10), column_config={"RF": st.column_config.ProgressColumn(min_value=0, max_value=float(opt_df['RF'].max()))}, use_container_width=True, hide_index=True)
-            else:
-                st.error(f"No data found for symbol '{symbol_input}'. Check the ticker and date range.")
-        except Exception as e:
-            st.error(f"Data Fetch Error: {e}")
+            opt_df = run_pk_optimizer(data, symbol_input, config, capital)
+            if not opt_df.empty:
+                best = opt_df.loc[opt_df['RF'].idxmax()]
+                st.metric("Baseline Check", f"{b_ret:.2f}% (Should match single backtest)")
+                st.metric("Best Optimized", f"{best['Return %']:.2f}%", delta=f"{best['Return %'] - b_ret:.2f}%")
+                st.dataframe(opt_df.sort_values(by="RF", ascending=False).head(10), hide_index=True)
