@@ -122,7 +122,6 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Metrics
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 years = max((df_trades['exit_date'].max() - pd.to_datetime(df_trades['entry_date'].min())).days / 365.25, 0.1)
@@ -168,11 +167,18 @@ if st.sidebar.button("🚀 Generate Full Report"):
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown (Long)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    # --- REARRANGED VERTICAL CHARTS ---
+                    # --- CHARTS WITH POSITIONED WHITE LABELS ---
                     st.subheader("1. Return by Period")
                     yearly_ret = df_trades.groupby('year')['pnl_pct'].sum() * 100
-                    fig_period = px.bar(yearly_ret, text_auto='.1f', color_discrete_sequence=['#3498db'])
-                    fig_period.update_layout(xaxis_title="", yaxis_title="Values", template="plotly_dark", height=500)
+                    fig_period = go.Figure(data=[go.Bar(
+                        x=yearly_ret.index, 
+                        y=yearly_ret.values,
+                        text=yearly_ret.values.round(1),
+                        textposition='auto', # Plotly handles 'above/below' automatically with 'auto'
+                        textfont=dict(color='white'),
+                        marker_color='#3498db'
+                    )])
+                    fig_period.update_layout(title="Return by Period", template="plotly_dark", height=500, yaxis_title="Values")
                     st.plotly_chart(fig_period, use_container_width=True)
                     st.divider()
 
@@ -180,18 +186,34 @@ if st.sidebar.button("🚀 Generate Full Report"):
                     win_loss_by_year = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
                     win_loss_by_year.columns = ['Losers', 'Winners']
                     win_loss_by_year['Total'] = win_loss_by_year['Winners'] + win_loss_by_year['Losers']
+                    
                     fig_wl = go.Figure()
-                    fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Total'], name='Total', marker_color='#3498db'))
-                    fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Winners'], name='Winners', marker_color='#2ecc71'))
-                    fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Losers'], name='Losers', marker_color='#e74c3c'))
-                    fig_wl.update_layout(barmode='group', template="plotly_dark", yaxis_title="Values", height=500)
+                    for col, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
+                        fig_wl.add_trace(go.Bar(
+                            x=win_loss_by_year.index, 
+                            y=win_loss_by_year[col], 
+                            name=col, 
+                            marker_color=color,
+                            text=win_loss_by_year[col],
+                            textposition='outside',
+                            textfont=dict(color='white')
+                        ))
+                    fig_wl.update_layout(barmode='group', template="plotly_dark", height=500, yaxis_title="Values")
                     st.plotly_chart(fig_wl, use_container_width=True)
                     st.divider()
 
                     st.subheader("3. Exit Distribution")
                     exit_stats = df_trades['exit_reason'].value_counts(normalize=True) * 100
-                    fig_exits = px.bar(exit_stats, text_auto='.0f', color_discrete_sequence=['#3498db'])
-                    fig_exits.update_layout(showlegend=False, yaxis_title="Values", template="plotly_dark", height=400)
+                    fig_exits = go.Figure(data=[go.Bar(
+                        x=exit_stats.index, 
+                        y=exit_stats.values,
+                        text=exit_stats.values.astype(int),
+                        texttemplate='%{text}%',
+                        textposition='outside',
+                        textfont=dict(color='white'),
+                        marker_color='#3498db'
+                    )])
+                    fig_exits.update_layout(template="plotly_dark", height=400, yaxis_title="Values")
                     st.plotly_chart(fig_exits, use_container_width=True)
                     st.divider()
 
@@ -202,11 +224,19 @@ if st.sidebar.button("🚀 Generate Full Report"):
                     day_data.columns = ['Losers', 'Winners']
                     day_data['Total'] = day_data['Winners'] + day_data['Losers']
                     day_data = day_data.reindex(day_order)
+
                     fig_day = go.Figure()
-                    fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Total'], name='Total', marker_color='#3498db'))
-                    fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Winners'], name='Winners', marker_color='#2ecc71'))
-                    fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Losers'], name='Losers', marker_color='#e74c3c'))
-                    fig_day.update_layout(barmode='group', template="plotly_dark", yaxis_title="Values", height=500)
+                    for col, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
+                        fig_day.add_trace(go.Bar(
+                            x=day_data.index, 
+                            y=day_data[col], 
+                            name=col, 
+                            marker_color=color,
+                            text=day_data[col],
+                            textposition='outside',
+                            textfont=dict(color='white')
+                        ))
+                    fig_day.update_layout(barmode='group', template="plotly_dark", height=500, yaxis_title="Values")
                     st.plotly_chart(fig_day, use_container_width=True)
 
                 with t4:
