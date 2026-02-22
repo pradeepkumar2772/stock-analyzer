@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 import io
 
-# --- 1. CORE DATA STRUCTURE (Identical) ---
+# --- 1. CORE DATA STRUCTURE ---
 @dataclass
 class Trade:
     symbol: str
@@ -20,7 +20,7 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- RS-AV CALCULATION ENGINE (Identical) ---
+# --- RS-AV CALCULATION ENGINE ---
 def calculate_rsav(stock_df, benchmark_df, lookback=50):
     s_roc = stock_df['close'].pct_change(lookback) * 100
     s_vol = s_roc.rolling(window=lookback).std()
@@ -30,16 +30,21 @@ def calculate_rsav(stock_df, benchmark_df, lookback=50):
     b_net = b_roc - b_vol
     return s_net - b_net
 
-# --- 2. MULTI-STRATEGY ENGINE (Identical) ---
+# --- 2. MULTI-STRATEGY ENGINE ---
 def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
+    # FIX: Initialize columns to prevent KeyError in Arena if no signals are generated
+    df['long_signal'] = False
+    df['exit_signal'] = False
+    
+    # --- Indicator Calculations ---
     if config.get('use_rsav', False) and benchmark_df is not None:
         df['rsav'] = calculate_rsav(df, benchmark_df, lookback=50)
 
-    # Indicator Logic (Stable Baseline)
+    # Base Indicator Logic
     df['ema_15_pk'] = df['close'].ewm(span=15, adjust=False).mean()
     df['ema_20_pk'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema_fast'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
@@ -70,6 +75,7 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     df['flag_high'] = df['high'].rolling(window=3).max()
     df['flag_low'] = df['low'].rolling(window=3).min()
 
+    # --- Strategy Signals ---
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20_pk'].shift(1)) & (df['close'] > df['ema_20_pk'])
         df['exit_signal'] = (df['close'] < df['ema_15_pk'])
@@ -79,12 +85,47 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     elif strategy_type == "EMA Ribbon":
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
         df['exit_signal'] = (df['ema_fast'] < df['ema_exit'])
-    # (Other strategies continue here...)
+    elif strategy_type == "Flags & Pennants":
+        df['long_signal'] = df['is_pole'].shift(3) & (df['close'] > df['flag_high'].shift(1))
+        df['exit_signal'] = (df['close'] < df['flag_low'].shift(1)) | (df['close'] < df['ema_exit'])
+    elif strategy_type == "Bollinger Squeeze Breakout":
+        is_sqz = df['bb_width'] <= df['bb_width'].rolling(window=20).min()
+        df['long_signal'] = is_sqz.shift(1) & (df['close'] > df['upper_bb'])
+        df['exit_signal'] = (df['close'] < df['sma_20'])
+    elif strategy_type == "EMA & RSI Synergy":
+        df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['rsi'] > 60)
+        df['exit_signal'] = (df['close'] < df['ema_exit']) | (df['rsi'] < 40)
+    elif strategy_type == "RSI Divergence":
+        price_ll = df['low'] < df['low'].shift(10); rsi_hl = df['rsi'] > df['rsi'].shift(10)
+        df['long_signal'] = price_ll & rsi_hl & (df['close'] > df['high'].shift(1))
+        df['exit_signal'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
+    elif strategy_type == "BB & RSI Exhaustion":
+        df['long_signal'] = (df['low'] <= df['lower_bb']) & (df['rsi'] < 30)
+        df['exit_signal'] = (df['close'] >= df['sma_20']) | (df['rsi'] > 50)
+    elif strategy_type == "Breakaway Gap Momentum":
+        df['long_signal'] = (df['open'] > df['high'].shift(1)) & (df['close'].shift(1) >= df['hhv'].shift(2) * 0.98)
+        df['exit_signal'] = (df['close'] < df['low'].shift(1))
+    elif strategy_type == "ATR Band Breakout":
+        u_atr = df['sma_20'] + df['atr']; l_atr = df['sma_20'] - df['atr']
+        df['long_signal'] = (df['close'] > u_atr) & (df['close'].shift(1) <= u_atr.shift(1))
+        df['exit_signal'] = (df['close'] < l_atr) & (df['close'].shift(1) >= l_atr.shift(1))
+    elif strategy_type == "HHV/LLV Breakout":
+        df['long_signal'] = (df['close'] > df['hhv'].shift(1)); df['exit_signal'] = (df['close'] < df['llv'].shift(1))
+    elif strategy_type == "Double Bottom Breakout":
+        df['long_signal'] = (df['close'] > df['neckline'].shift(1)); df['exit_signal'] = (df['close'] < df['ema_exit'])
+    elif strategy_type == "Fibonacci 61.8% Retracement":
+        uptrend = df['close'] > df['sma_200']; fib = df['hhv'] - ((df['hhv'] - df['llv']) * 0.618)
+        df['long_signal'] = uptrend & (df['low'] <= fib) & (df['close'] > df['high'].shift(1))
+        df['exit_signal'] = df['close'] < df['llv'].shift(1)
+    elif strategy_type == "Relative Strength Play":
+        stock_ret = df['close'].pct_change(periods=55)
+        df['long_signal'] = (stock_ret > 0) & (df['close'] > df['ema_fast']); df['exit_signal'] = (df['close'] < df['ema_slow'])
 
+    # --- Backtest Loop ---
     for i in range(1, len(df)):
         current = df.iloc[i]; prev = df.iloc[i-1]
         market_ok = True
-        if config.get('use_rsav', False):
+        if config.get('use_rsav', False) and 'rsav' in df.columns:
             market_ok = current['rsav'] >= config.get('rsav_trigger', -0.5)
             
         if active_trade:
@@ -101,7 +142,7 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 3. UI STYLING (Identical) ---
+# --- 3. UI STYLING ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
 st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
 
@@ -230,12 +271,12 @@ elif run_arena:
             st.subheader("🏟️ Strategy Arena Leaderboard")
             res_df = pd.DataFrame(arena_results).sort_values(by="Total Return %", ascending=False)
             
-            # Formatting the Leaderboard with Color-Coding
+            # Leaderboard Styling
             def highlight_stats(val):
                 color = ''
                 if isinstance(val, (int, float)):
-                    if val > 100: color = 'background-color: #1b5e20; color: white' # High Return
-                    elif val < -15: color = 'background-color: #b71c1c; color: white' # High Drawdown
+                    if val > 100: color = 'background-color: #1b5e20; color: white'
+                    elif val < -15: color = 'background-color: #b71c1c; color: white'
                 return color
 
             styled_df = res_df.style.applymap(highlight_stats, subset=['Total Return %', 'Max DD %'])
