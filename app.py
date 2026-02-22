@@ -78,7 +78,7 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-# DATE RANGE (Original stable logic)
+# DATE RANGE (Kept exactly as per your stable script)
 fifty_years_ago = date.today() - timedelta(days=50*365)
 user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
 user_end = st.sidebar.date_input("End Date", value=date.today())
@@ -116,6 +116,11 @@ if st.sidebar.button("🚀 Run Backtest"):
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 win_rate = (len(wins) / len(df_trades)) * 100
                 
+                # Duration Calculations
+                df_trades['duration'] = df_trades['exit_date'] - df_trades['entry_date']
+                avg_holding = df_trades['duration'].mean()
+                total_exposure = df_trades['duration'].sum()
+                
                 avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
                 avg_loss_pct = abs(losses['pnl_pct'].mean() * 100) if not losses.empty else 0.0001
                 
@@ -145,6 +150,12 @@ if st.sidebar.button("🚀 Run Backtest"):
                 c4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
                 st.divider()
+                st.subheader("⏱️ Duration & Exposure")
+                d1, d2, d3 = st.columns(3)
+                d1.metric("Avg Holding Period", str(avg_holding).split('.')[0])
+                d2.metric("Total Market Exposure", str(total_exposure).split('.')[0])
+                d3.metric("Exposure %", f"{(total_exposure / (processed_df.index[-1] - processed_df.index[0]))*100:.1f}%")
+
                 st.subheader("📝 Detailed Trade Summary")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Profit Factor", f"{profit_factor:.2f}")
@@ -158,12 +169,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                 s7.metric("Max Win Streak", f"{max_win_streak}")
                 s8.metric("Max Loss Streak", f"{max_loss_streak}")
 
-                s9, s10, s11, s12 = st.columns(4)
-                s9.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
-                s10.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
-                s11.metric("Total Trades", len(df_trades))
-                s12.metric("Final Capital", f"₹{df_trades['equity'].iloc[-1]:,.0f}")
-
                 # Charts
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
@@ -171,7 +176,8 @@ if st.sidebar.button("🚀 Run Backtest"):
                 fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.dataframe(df_trades)
+                st.subheader("📜 Detailed Trade Log")
+                st.dataframe(df_trades[['symbol', 'entry_date', 'exit_date', 'duration', 'pnl_pct', 'exit_reason']], use_container_width=True)
                 
                 csv = df_trades.to_csv(index=False).encode('utf-8')
                 st.download_button(label="📥 Download CSV Report", data=csv, file_name=f"{symbol}_audit.csv", mime='text/csv')
