@@ -38,56 +38,64 @@ def run_backtest(df, symbol, config, strategy_type):
 
     # --- Candlestick Definitions (Nison Principles) ---
     body_size = np.abs(df['close'] - df['open'])
+    lower_shadow = np.minimum(df['open'], df['close']) - df['low']
+    upper_shadow = df['high'] - np.maximum(df['open'], df['close'])
+    candle_range = df['high'] - df['low']
     is_green = df['close'] > df['open']
     is_red = df['close'] < df['open']
     mid_point_prev = (df['open'].shift(1) + df['close'].shift(1)) / 2
 
-    # 1. Bullish Harami (Nison: Small body inside a long previous red body)
-    df['is_bull_harami'] = is_red.shift(1) & is_green & \
-                           (df['high'] < df['open'].shift(1)) & \
-                           (df['low'] > df['close'].shift(1)) & \
-                           (body_size < body_size.shift(1) * 0.5)
+    # 1. Hammer
+    df['is_hammer'] = (lower_shadow > (2 * body_size)) & (upper_shadow < (0.1 * candle_range))
+    
+    # 2. Bullish Engulfing
+    df['is_bull_engulf'] = is_green & is_red.shift(1) & (df['close'] > df['open'].shift(1)) & (df['open'] < df['close'].shift(1))
 
-    # 2. Morning Star (Bottom Reversal)
+    # 3. Piercing Line
+    df['is_piercing'] = is_red.shift(1) & is_green & (df['open'] < df['low'].shift(1)) & (df['close'] > mid_point_prev)
+
+    # 4. Morning/Evening Star
     is_star = body_size < (body_size.rolling(window=10).mean() * 0.5)
-    df['is_morning_star'] = is_red.shift(2) & is_star.shift(1) & is_green & \
-                            (df['open'].shift(1) < df['close'].shift(2)) & \
-                            (df['close'] > mid_point_prev.shift(1))
+    df['is_morning_star'] = is_red.shift(2) & is_star.shift(1) & is_green & (df['open'].shift(1) < df['close'].shift(2)) & (df['close'] > mid_point_prev.shift(1))
+    df['is_evening_star'] = is_green.shift(2) & is_star.shift(1) & is_red & (df['open'].shift(1) > df['close'].shift(2)) & (df['close'] < mid_point_prev.shift(1))
 
-    # 3. Evening Star (Top Reversal)
-    df['is_evening_star'] = is_green.shift(2) & is_star.shift(1) & is_red & \
-                            (df['open'].shift(1) > df['close'].shift(2)) & \
-                            (df['close'] < mid_point_prev.shift(1))
+    # 5. Bullish Harami
+    df['is_bull_harami'] = is_red.shift(1) & is_green & (df['high'] < df['open'].shift(1)) & (df['low'] > df['close'].shift(1)) & (body_size < body_size.shift(1) * 0.5)
 
     # --- Strategy Signals ---
-    if strategy_type == "Nison: Bullish Harami":
-        df['long_signal'] = df['is_bull_harami']
-        df['exit_signal'] = (df['close'] < df['ema_exit'])
-
-    elif strategy_type == "Nison: Morning/Evening Star":
-        df['long_signal'] = df['is_morning_star']
-        df['exit_signal'] = df['is_evening_star'] | (df['close'] < df['ema_exit'])
-
-    elif strategy_type == "RSI 60 Cross":
+    if strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
-
     elif strategy_type == "EMA Ribbon":
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
         df['exit_signal'] = (df['ema_fast'] < df['ema_exit']) & (df['ema_fast'].shift(1) >= df['ema_exit'].shift(1))
-
+    elif strategy_type == "Nison: Hammer":
+        df['long_signal'] = df['is_hammer'] & (df['close'] < df['ema_fast'])
+        df['exit_signal'] = (df['close'] > df['ema_fast'] * 1.05) | (df['close'] < df['low'].shift(1))
+    elif strategy_type == "Nison: Bullish Engulfing":
+        df['long_signal'] = df['is_bull_engulf'] & (df['close'] > df['sma_200'])
+        df['exit_signal'] = (df['close'] < df['ema_exit'])
+    elif strategy_type == "Nison: Piercing Line":
+        df['long_signal'] = df['is_piercing']
+        df['exit_signal'] = (df['close'] < df['ema_exit'])
+    elif strategy_type == "Nison: Morning/Evening Star":
+        df['long_signal'] = df['is_morning_star']
+        df['exit_signal'] = df['is_evening_star'] | (df['close'] < df['ema_exit'])
+    elif strategy_type == "Nison: Bullish Harami":
+        df['long_signal'] = df['is_bull_harami']
+        df['exit_signal'] = (df['close'] < df['ema_exit'])
     elif strategy_type == "EMA & RSI Synergy":
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['rsi'] > 60)
         df['exit_signal'] = (df['close'] < df['ema_exit']) | (df['rsi'] < 40)
-
     elif strategy_type == "Double Bottom Breakout":
         neckline = df['high'].rolling(window=20).max()
         df['long_signal'] = (df['close'] > neckline.shift(1))
         df['exit_signal'] = (df['close'] < df['ema_exit'])
-
-    else: # Default Baseline
-        df['long_signal'] = False
-        df['exit_signal'] = False
+    elif strategy_type == "Fibonacci 61.8% Retracement":
+        hhv = df['high'].rolling(window=20).max(); llv = df['low'].rolling(window=20).min()
+        fib = hhv - ((hhv - llv) * 0.618)
+        df['long_signal'] = (df['close'] > df['sma_200']) & (df['low'] <= fib) & (df['close'] > df['high'].shift(1))
+        df['exit_signal'] = (df['close'] < llv.shift(1))
 
     # --- Backtest Loop ---
     for i in range(1, len(df)):
@@ -106,16 +114,17 @@ def run_backtest(df, symbol, config, strategy_type):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 3. UI & SIDEBAR ---
-st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
+# --- 3. UI STYLING ---
+st.set_page_config(layout="wide", page_title="Nison Master Lab")
 st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; } .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
 
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
 
+# --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "Nison: Bullish Harami", "Nison: Morning/Evening Star", "EMA & RSI Synergy", "Double Bottom Breakout"])
+strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "Nison: Hammer", "Nison: Bullish Engulfing", "Nison: Piercing Line", "Nison: Morning/Evening Star", "Nison: Bullish Harami", "EMA & RSI Synergy", "Double Bottom Breakout", "Fibonacci 61.8% Retracement"])
 selected_tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "1d"], index=4)
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
 start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
@@ -127,7 +136,7 @@ use_sl = st.sidebar.toggle("Stop Loss", True); config['sl_val'] = st.sidebar.sli
 use_tp = st.sidebar.toggle("Target Profit", True); config['tp_val'] = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0; config['use_tp'] = use_tp
 use_slip = st.sidebar.toggle("Slippage", True); config['slippage_val'] = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slip else 0; config['use_slippage'] = use_slip
 
-# --- 4. EXECUTION ---
+# --- 5. EXECUTION ---
 if st.sidebar.button("🚀 Run Backtest"):
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=selected_tf, auto_adjust=True)
@@ -145,35 +154,40 @@ if st.sidebar.button("🚀 Run Backtest"):
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
-                years_v = max(duration.days / 365.25, 0.1)
-                cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1/years_v)) - 1) * 100
+                years_v = max(duration.days / 365.25, 0.1); cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1/years_v)) - 1) * 100
                 peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
                 sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
                 rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
                 exp = (total_ret/len(df_trades)); calmar = abs(cagr/mdd) if mdd != 0 else 0.0
+                pnl_b = (df_trades['pnl_pct'] > 0).astype(int); strk = pnl_b.groupby((pnl_b != pnl_b.shift()).cumsum()).cumcount() + 1
+                max_w_s = strk[pnl_b == 1].max() if not wins.empty else 0; max_l_s = strk[pnl_b == 0].max() if not losses.empty else 0
 
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 with t1:
                     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
                     r1c1.metric("Total Returns (%)", f"{total_ret:.2f}%"); r1c2.metric("Max Drawdown", f"{mdd:.2f}%"); r1c3.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%"); r1c4.metric("Total Trades", len(df_trades))
-                    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-                    r2c1.metric("Initial Capital", f"{capital:,.2f}"); r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); r2c3.metric("CAGR", f"{cagr:.2f}%"); r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
-                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-                    r3c1.metric("Risk-Reward", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe", f"{sharpe:.2f}"); r3c4.metric("Calmar", f"{calmar:.2f}")
-
+                
                 with t2:
                     cl, cr = st.columns([1, 2.5])
                     with cl:
-                        with st.expander("📈 Return", expanded=True):
-                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %")
+                        with st.expander("📊 Backtest Details", expanded=True):
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
+                        with st.expander("📈 Return"):
+                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Avg Return per Win", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}")
+                        with st.expander("🔍 Characteristics"):
+                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Winning Streak", max_w_s); draw_stat("Losing Streak", max_l_s)
+                        with st.expander("🛡️ Risk Metrics"):
+                            draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
+                        with st.expander("⏱️ Holding Period"):
+                            df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
+                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                     with cr:
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Strategy Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
-                
-                with t3:
-                    y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
-                    st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
+                        st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
