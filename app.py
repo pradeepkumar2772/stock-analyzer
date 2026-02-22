@@ -59,10 +59,10 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Auto-Correcting Backtest Engine")
+st.set_page_config(layout="wide", page_title="PK Ribbon Performance Pro")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
-symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS")
+symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
 
 tf_limits = {
     "1 Minute": {"val": "1m", "max_days": 7},
@@ -77,10 +77,7 @@ selected_tf = tf_limits[selected_tf_label]["val"]
 max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
-
-# DATE RANGE INPUTS
-fifty_years_ago = date.today() - timedelta(days=50*365)
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
@@ -93,57 +90,77 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Backtest"):
-    # --- AUTO-CORRECTION LOGIC ---
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
-    final_start = user_start
+    final_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
-    if user_start < earliest_allowed:
-        final_start = earliest_allowed
-        st.info(f"💡 **Auto-Corrected:** Yahoo Finance only allows {max_days_allowed} days for {selected_tf_label}. Start date adjusted to {final_start}.")
-    
-    if final_start >= user_end:
-        st.error("❌ End date must be after the start date. Please check your inputs.")
-    else:
-        try:
-            with st.spinner(f'Fetching {selected_tf_label} data...'):
-                data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+    try:
+        with st.spinner('Calculating Statistics...'):
+            data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+            if not data.empty:
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.get_level_values(0)
+                data.columns = [str(col).lower() for col in data.columns]
+                data = data.dropna()
                 
-                if data.empty:
-                    st.error("No data returned. Try a different symbol or timeframe.")
+                config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
+                trades, processed_df = run_backtest(data, symbol, config)
+
+                if trades:
+                    df_trades = pd.DataFrame([vars(t) for t in trades])
+                    
+                    # --- PERFORMANCE MATH ---
+                    wins = df_trades[df_trades['pnl_pct'] > 0]
+                    losses = df_trades[df_trades['pnl_pct'] <= 0]
+                    win_rate = (len(wins) / len(df_trades)) * 100
+                    
+                    avg_win = wins['pnl_pct'].mean() if not wins.empty else 0
+                    avg_loss = abs(losses['pnl_pct'].mean()) if not losses.empty else 0.0001
+                    risk_reward = avg_win / avg_loss
+                    expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
+                    
+                    # Profit Factor
+                    total_profit = wins['pnl_pct'].sum()
+                    total_loss = abs(losses['pnl_pct'].sum())
+                    profit_factor = total_profit / total_loss if total_loss != 0 else total_profit
+                    
+                    # CAGR
+                    final_equity = capital * (1 + df_trades['pnl_pct']).cumprod().iloc[-1]
+                    years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
+                    cagr = ((final_equity / capital) ** (1 / years) - 1) * 100
+                    
+                    # Drawdown
+                    df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+                    peak = df_trades['equity'].cummax()
+                    mdd = ((df_trades['equity'] - peak) / peak).min() * 100
+
+                    # --- UI DISPLAY ---
+                    st.subheader("📊 Strategy Performance Scorecard")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("CAGR", f"{cagr:.2f}%")
+                    c2.metric("Success Ratio", f"{win_rate:.1f}%")
+                    c3.metric("Max Drawdown", f"{mdd:.2f}%")
+                    c4.metric("Profit Factor", f"{profit_factor:.2f}")
+
+                    c5, c6, c7, c8 = st.columns(4)
+                    c5.metric("Risk:Reward", f"1:{risk_reward:.2f}")
+                    c6.metric("Expectancy", f"{expectancy*100:.2f}%")
+                    c7.metric("Avg Return/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
+                    c8.metric("Total Trades", len(df_trades))
+
+                    # Chart
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                    fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20", line=dict(color='yellow')), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema50'], name="EMA 50", line=dict(color='red')), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
+                    fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.dataframe(df_trades, use_container_width=True)
+                    
+                    csv = df_trades.to_csv(index=False).encode('utf-8')
+                    st.download_button(label="📥 Download CSV", data=csv, file_name=f"{symbol}_report.csv", mime='text/csv')
                 else:
-                    if isinstance(data.columns, pd.MultiIndex):
-                        data.columns = data.columns.get_level_values(0)
-                    data.columns = [str(col).lower() for col in data.columns]
-                    data = data.dropna()
-                    
-                    st.success(f"Loaded {len(data)} bars for {symbol}")
-                    
-                    config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
-                    trades, processed_df = run_backtest(data, symbol, config)
-
-                    if not trades:
-                        st.warning("No trades generated.")
-                    else:
-                        df_trades = pd.DataFrame([vars(t) for t in trades])
-                        total_ret = (df_trades['pnl_pct'] + 1).prod() - 1
-                        win_rate = (len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100
-
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Total Return", f"{total_ret*100:.1f}%")
-                        m2.metric("Win Rate", f"{win_rate:.1f}%")
-                        m3.metric("Trades", len(df_trades))
-                        m4.metric("Final Value", f"₹{capital * (1+total_ret):,.0f}")
-
-                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                        fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
-                        fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20", line=dict(color='yellow', width=1)), row=1, col=1)
-                        fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema50'], name="EMA 50", line=dict(color='red', width=1)), row=1, col=1)
-                        
-                        df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                        fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='#00ffcc')), row=2, col=1)
-                        
-                        fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
-                        st.plotly_chart(fig, use_container_width=True)
-                        st.dataframe(df_trades)
+                    st.warning("No trades found.")
         except Exception as e:
             st.error(f"Error: {e}")
