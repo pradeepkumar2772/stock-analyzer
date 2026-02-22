@@ -19,7 +19,7 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. BACKTEST ENGINE (RSI 60 CROSS) ---
+# --- 2. RSI 60 CROSS ENGINE ---
 def run_backtest(df, symbol, config):
     trades = []
     active_trade = None
@@ -30,7 +30,7 @@ def run_backtest(df, symbol, config):
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    # Entry: RSI crosses 60 from below | Exit: RSI crosses 60 from above
+    # RSI 60 Cross Logic
     df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
     df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
 
@@ -39,7 +39,6 @@ def run_backtest(df, symbol, config):
         if active_trade:
             sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
             tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
-            
             if sl_hit or tp_hit or prev['exit_signal']:
                 reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
                 active_trade.exit_price = current['open'] * (1 - slippage)
@@ -51,8 +50,8 @@ def run_backtest(df, symbol, config):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 3. UI STYLING & HELPERS ---
-st.set_page_config(layout="wide", page_title="Institutional Backtest Pro")
+# --- 3. UI STYLING ---
+st.set_page_config(layout="wide", page_title="Institutional RSI 60 Dashboard")
 st.markdown("""
     <style>
     .stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; }
@@ -70,27 +69,10 @@ st.markdown("""
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
 
-# --- 4. SIDEBAR SETTINGS ---
+# --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ RSI 60 Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-
-# EXPANDED TIMEFRAME MAPPING
-tf_map = {
-    "1 Minute": "1m",
-    "2 Minutes": "2m",
-    "5 Minutes": "5m",
-    "15 Minutes": "15m",
-    "30 Minutes": "30m",
-    "60 Minutes": "60m",
-    "90 Minutes": "90m",
-    "1 Hour": "1h",
-    "Daily": "1d",
-    "Weekly": "1wk",
-    "Monthly": "1mo"
-}
-selected_tf_label = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=8) # Default to Daily
-selected_tf = tf_map[selected_tf_label]
-
+selected_tf = st.sidebar.selectbox("Timeframe", ["Daily", "1 Hour", "15 Minutes"])
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
 start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
@@ -100,9 +82,10 @@ use_tp = st.sidebar.toggle("Target Profit", value=True); tp_val = st.sidebar.sli
 use_slippage = st.sidebar.toggle("Slippage", value=True); slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 # --- 5. EXECUTION ---
-if st.sidebar.button("🚀 Run Phase 1 Analysis"):
+if st.sidebar.button("🚀 Run Institutional Backtest"):
     try:
-        data = yf.download(symbol, start=start_str, end=end_str, interval=selected_tf, auto_adjust=True)
+        tf_map = {"Daily": "1d", "1 Hour": "1h", "15 Minutes": "15m"}
+        data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
         if not data.empty:
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
@@ -110,11 +93,11 @@ if st.sidebar.button("🚀 Run Phase 1 Analysis"):
             
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
-                df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date']); df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
+                df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date'])
+                df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
                 
-                # Metric Scope Definition
+                # --- CENTRALIZED METRIC DEFINITIONS ---
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
@@ -122,25 +105,27 @@ if st.sidebar.button("🚀 Run Phase 1 Analysis"):
                 cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1/years_v)) - 1) * 100
                 peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
                 avg_dd = drawdown.mean() * 100
-                expectancy = (total_ret/len(df_trades)); sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
+                exp = (total_ret/len(df_trades))
+                sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
                 rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
                 calmar = abs(cagr/mdd) if mdd != 0 else 0.0
                 
-                # Streak Logic
                 pnl_bool = (df_trades['pnl_pct'] > 0).astype(int); streaks = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
                 max_w_s = streaks[pnl_bool == 1].max() if not wins.empty else 0; max_l_s = streaks[pnl_bool == 0].max() if not losses.empty else 0
 
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 
                 with t1:
+                    # 1. 12-PARAMETER GRID
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Total Returns (%)", f"{total_ret:.2f}%"); c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%"); c3.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%"); c4.metric("Total Trades", len(df_trades))
                     c5, c6, c7, c8 = st.columns(4)
                     c5.metric("Initial Capital", f"{capital:,.2f}"); c6.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); c7.metric("CAGR", f"{cagr:.2f}%"); c8.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
                     c9, c10, c11, c12 = st.columns(4)
-                    c9.metric("Risk-Reward Ratio", f"{rr:.2f}"); c10.metric("Expectancy", f"{expectancy:.2f}"); c11.metric("Sharpe Ratio", f"{sharpe:.2f}"); c12.metric("Calmer Ratio", f"{calmar:.2f}")
+                    c9.metric("Risk-Reward Ratio", f"{rr:.2f}"); c10.metric("Expectancy", f"{exp:.2f}"); c11.metric("Sharpe Ratio", f"{sharpe:.2f}"); c12.metric("Calmer Ratio", f"{calmar:.2f}")
                     
                     st.divider()
+                    # 2. MONTHLY RETURNS
                     st.subheader("Monthly Returns")
                     df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                     pivot = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
@@ -156,55 +141,61 @@ if st.sidebar.button("🚀 Run Phase 1 Analysis"):
                             html += f"<td class='{cls}'>{display_val}</td>"
                         html += "</tr>"
                     st.markdown(html + "</tbody></table>", unsafe_allow_html=True)
+                    
                     st.divider()
-                    df_exp = pd.DataFrame({"Parameter": ["Total Returns (%)", "MDD (%)", "Win Ratio (%)", "CAGR (%)", "Sharpe", "Expectancy"], "Value": [f"{total_ret:.2f}", f"{mdd:.2f}", f"{(len(wins)/len(df_trades)*100):.2f}", f"{cagr:.2f}", f"{sharpe:.2f}", f"{expectancy:.2f}"]})
+                    # 3. CSV DOWNLOAD
+                    df_exp = pd.DataFrame({"Parameter": ["Total Returns (%)", "Max Drawdown (%)", "Win Ratio (%)", "CAGR (%)", "Sharpe Ratio", "Calmer Ratio"], "Value": [f"{total_ret:.2f}", f"{mdd:.2f}", f"{(len(wins)/len(df_trades)*100):.2f}", f"{cagr:.2f}", f"{sharpe:.2f}", f"{calmar:.2f}"]})
                     st.download_button("📥 Download Quick Stats (CSV)", df_exp.to_csv(index=False).encode('utf-8'), f"{symbol}_Stats.csv", "text/csv")
 
                 with t2:
                     cl, cr = st.columns([1, 2.5])
                     with cl:
+                        # 4. 8-SECTION EXPANDERS
                         with st.expander("📊 Backtest Details", expanded=True):
-                            draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M"); draw_stat("Segment", "NSE"); draw_stat("Timeframe", selected_tf_label)
+                            draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M"); draw_stat("Segment", "NSE"); draw_stat("Timeframe", selected_tf)
                         with st.expander("📈 Return"):
                             draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %"); draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
-                            draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{avg_dd:.2f} %")
+                            draw_stat("Max Drawdown", f"{mdd:.2f} %"); draw_stat("Avg Drawdown", f"{avg_dd:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Average Return per Winning Trade", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Average Return per Losing Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{expectancy:.2f}")
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Avg Win Trade", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Avg Loss Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
                         with st.expander("🔍 Trade Characteristics"):
-                            draw_stat("Total Number of Trades", len(df_trades)); draw_stat("Total No. of Profit Trades", len(wins)); draw_stat("Total No. of Loss Trades", len(losses)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", f"{max_w_s}.00"); draw_stat("Lossing Streak", f"{max_l_s}.00")
+                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", f"{max_w_s}.00"); draw_stat("Lossing Streak", f"{max_l_s}.00")
                         with st.expander("🛡️ Risk-Adjusted Metrics"):
                             draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
                         with st.expander("⏱️ Holding Period"):
-                            draw_stat("Max Holding Period", f"{df_trades['hold'].max()} days"); draw_stat("Min Holding Period", f"{df_trades['hold'].min()} days"); draw_stat("Average Holding Period", f"{df_trades['hold'].mean():.2f} days")
+                            df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
+                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Min Hold", f"{df_trades['hold'].min()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                         with st.expander("🔥 Streak"):
-                            draw_stat("Win Streak", f"{max_w_s}"); draw_stat("Loss Streak", f"{max_l_s}")
+                            draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
                     with cr:
-                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
                         
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    # 1. RETURN BY PERIOD
+                    # 5. 4 VERTICAL BAR CHARTS
                     y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', textfont=dict(color='white'), marker_color='#3498db')]).add_hline(y=0, line_color="white").update_layout(title="Return by Period (%)", template="plotly_dark"), use_container_width=True)
-                    # 2. WINNERS/LOSERS
+                    
                     wl_y = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
                     wl_y.columns = ['Losers', 'Winners']; wl_y['Total'] = wl_y['Winners'] + wl_y['Losers']
                     f2 = go.Figure()
-                    for c, col_n in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']): f2.add_trace(go.Bar(x=wl_y.index, y=wl_y[c], name=c, marker_color=col_n, text=wl_y[c], textposition='outside', textfont=dict(color='white')))
+                    for c, col in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
+                        f2.add_trace(go.Bar(x=wl_y.index, y=wl_y[c], name=c, marker_color=col, text=wl_y[c], textposition='outside', textfont=dict(color='white')))
                     st.plotly_chart(f2.update_layout(barmode='group', title="Winners/Losers (Yearly)", template="plotly_dark"), use_container_width=True)
-                    # 3. EXITS
+                    
                     ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', textfont=dict(color='white'), marker_color='#3498db')]).update_layout(title="Exits Distribution", template="plotly_dark"), use_container_width=True)
-                    # 4. DAY OF WEEK
+                    
                     df_trades['day'] = df_trades['exit_date'].dt.day_name(); day_d = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
                     day_d.columns = ['Losers', 'Winners']; day_d['Total'] = day_d['Winners'] + day_d['Losers']; day_d = day_d.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
                     f4 = go.Figure()
-                    for c, col_n in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']): f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker_color=col_n, text=day_d[c], textposition='outside', textfont=dict(color='white')))
+                    for c, col in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
+                        f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker_color=col, text=day_d[c], textposition='outside', textfont=dict(color='white')))
                     st.plotly_chart(f4.update_layout(barmode='group', title="Trades by Day of the Week", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Execution Error: {e}")
