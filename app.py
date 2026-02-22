@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
-from datetime import date, timedelta
+from datetime import date
 
 st.set_page_config(layout="wide")
 st.title("🚀 PK Ribbon Performance Suite")
@@ -13,7 +13,7 @@ st.title("🚀 PK Ribbon Performance Suite")
 # -----------------------------
 st.sidebar.header("Strategy Settings")
 
-symbol = st.sidebar.text_input("Stock Symbol", "RELIANCE.NS").upper()
+symbol = st.sidebar.text_input("Stock Symbol", "RELIANCE.NS")
 
 # TIMEFRAME SELECTOR
 tf_options = {
