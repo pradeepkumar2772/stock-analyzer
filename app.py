@@ -63,17 +63,6 @@ st.set_page_config(layout="wide", page_title="PK Ribbon Engine")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 
-# TICKER REFERENCE TABLE (Handy Cheat Sheet)
-with st.sidebar.expander("📖 Ticker Cheat Sheet"):
-    st.markdown("""
-    - **Nifty 50:** `^NSEI`
-    - **Bank Nifty:** `^NSEBANK`
-    - **Sensex:** `^BSESN`
-    - **Reliance:** `RELIANCE.NS`
-    - **S&P 500:** `^GSPC`
-    - **Nasdaq:** `^IXIC`
-    """)
-
 symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
 
 tf_limits = {
@@ -90,8 +79,6 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-# DATE RANGE INPUTS
-# Note: Removed min_value constraint here to avoid the range error you saw
 user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
@@ -105,30 +92,24 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Backtest"):
-    # --- AUTO-CORRECTION LOGIC ---
+    # Silent Auto-Correction for Date Range
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
-    final_start = user_start
-    
-    if user_start < earliest_allowed:
-        final_start = earliest_allowed
-        st.info(f"💡 **Auto-Corrected:** Adjusted to {final_start} (Timeframe Limit)")
+    final_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
     if final_start >= user_end:
         st.error("❌ End date must be after the start date.")
     else:
         try:
-            with st.spinner(f'Fetching {selected_tf_label} data...'):
+            with st.spinner('Processing...'):
                 data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
                 
                 if data.empty:
-                    st.error("No data returned. Check your ticker or date range.")
+                    st.error("No data returned. Check symbol or date range.")
                 else:
                     if isinstance(data.columns, pd.MultiIndex):
                         data.columns = data.columns.get_level_values(0)
                     data.columns = [str(col).lower() for col in data.columns]
                     data = data.dropna()
-                    
-                    st.success(f"Loaded {len(data)} bars for {symbol}")
                     
                     config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
                     trades, processed_df = run_backtest(data, symbol, config)
@@ -158,14 +139,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                         st.plotly_chart(fig, use_container_width=True)
                         st.dataframe(df_trades, use_container_width=True)
 
-                        # --- NEW: DOWNLOAD BUTTON ---
-                        st.divider()
                         csv_data = df_trades.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="📥 Download Trade Log as CSV",
-                            data=csv_data,
-                            file_name=f"{symbol}_backtest.csv",
-                            mime='text/csv',
-                        )
+                        st.download_button(label="📥 Download CSV", data=csv_data, file_name=f"{symbol}_backtest.csv", mime='text/csv')
         except Exception as e:
             st.error(f"Error: {e}")
