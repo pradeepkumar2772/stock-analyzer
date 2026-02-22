@@ -147,8 +147,20 @@ def draw_stat(label, value):
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
 strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "Flags & Pennants", "Bollinger Squeeze Breakout", "Breakaway Gap Momentum", "EMA & RSI Synergy", "RSI Divergence", "BB & RSI Exhaustion", "Relative Strength Play", "ATR Band Breakout", "HHV/LLV Breakout", "Double Bottom Breakout", "Fibonacci 61.8% Retracement"])
-tf_map = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", "1 Hour": "1h", "Daily": "1d"}
-selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=4)
+tf_map = {
+    "1 Minute": "1m", 
+    "2 Minutes": "2m",
+    "3 Minutes": "3m",
+    "5 Minutes": "5m", 
+    "10 Minutes": "10m",
+    "15 Minutes": "15m", 
+    "30 Minutes": "30m",
+    "1 Hour": "1h", 
+    "Daily": "1d",
+    "Weekly": "1wk",
+    "Monthly": "1mo"
+}
+selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=8) # Default to Daily
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
 start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
