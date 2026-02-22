@@ -47,7 +47,7 @@ def run_backtest(df, symbol, config, strategy_type):
             sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
             tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
             if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
+                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "Signal")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -157,13 +157,13 @@ if st.sidebar.button("🚀 Run Backtest"):
                     cl, cr = st.columns([1, 2.5])
                     with cl:
                         with st.expander("📊 Backtest Details", expanded=True):
-                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M"); draw_stat("Segment", "NSE"); draw_stat("Timeframe", selected_tf)
                         with st.expander("📈 Return"):
                             draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %"); draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Average Return per Winning Trade", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Average Return per Losing Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Avg Return per Win", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Avg Return per Loss", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
                         with st.expander("🔍 Trade Characteristics"):
                             draw_stat("Total Number of Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", f"{max_w_s}.00"); draw_stat("Lossing Streak", f"{max_l_s}.00")
                         with st.expander("🛡️ Risk-Adjusted Metrics"):
@@ -177,6 +177,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
                         
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
+                        
 
                 with t3:
                     y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
