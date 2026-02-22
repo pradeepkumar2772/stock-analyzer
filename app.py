@@ -222,25 +222,26 @@ if st.sidebar.button("🚀 Run Backtest"):
                 with t2:
                     cl, cr = st.columns([1, 2.5])
                     with cl:
-                        with st.expander("📊 Performance", expanded=True):
-                            draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
-                        with st.expander("📈 Returns"):
-                            draw_stat("Total Ret", f"{total_ret:.2f}%"); draw_stat("Avg Ret/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%"); draw_stat("Highest Ret", f"{df_trades['pnl_pct'].max()*100:.2f}%"); draw_stat("Lowest Ret", f"{df_trades['pnl_pct'].min()*100:.2f}%")
+                        with st.expander("📊 Backtest Details", expanded=True):
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
+                        with st.expander("📈 Return"):
+                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %"); draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
-                            draw_stat("Max DD", f"{mdd:.2f}%"); draw_stat("Avg DD", f"{drawdown.mean()*100:.2f}%")
+                            draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f}%"); draw_stat("Risk-Reward", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
-                        with st.expander("🔍 Characteristics"):
-                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Max Profit (%)", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss (%)", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", max_w_s); draw_stat("Losing Streak", max_l_s)
-                        with st.expander("🛡️ Risk Metrics"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Average Return per Winning Trade", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Average Return per Losing Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                        with st.expander("🔍 Trade Characteristics"):
+                            draw_stat("Total Number of Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", f"{max_w_s}.00"); draw_stat("Lossing Streak", f"{max_l_s}.00")
+                        with st.expander("🛡️ Risk-Adjusted Metrics"):
                             draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
-                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
+                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Min Hold", f"{df_trades['hold'].min()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                         with st.expander("🔥 Streak"):
-                            draw_stat("Max Win Streak", max_w_s); draw_stat("Max Loss Streak", max_l_s)
+                            draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
                     with cr:
-                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Strategy Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
