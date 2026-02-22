@@ -3,151 +3,179 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
-from datetime import date
+from plotly.subplots import make_subplots
+from dataclasses import dataclass
+from datetime import datetime, date, timedelta
 
-st.set_page_config(layout="wide")
-st.title("🚀 Clean EMA Crossover Backtester")
+# --- 1. CORE DATA STRUCTURES ---
+@dataclass
+class Trade:
+    symbol: str
+    direction: str
+    entry_date: datetime
+    entry_price: float
+    exit_date: datetime = None
+    exit_price: float = None
+    exit_reason: str = None
+    pnl_pct: float = 0.0
 
-# -----------------------------
-# SIDEBAR SETTINGS
-# -----------------------------
-st.sidebar.header("Strategy Settings")
+# --- 2. BACKTEST ENGINE ---
+def run_backtest(df, symbol, config):
+    trades = []
+    active_trade = None
+    slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
+    
+    df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
+    df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+    
+    df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
+    df['exit_signal'] = (df['ema20'] < df['ema30']) & (df['ema20'].shift(1) >= df['ema30'].shift(1))
 
-symbol = st.sidebar.text_input("Stock Symbol", "RELIANCE.NS")
-start = st.sidebar.date_input("Start Date", date(2018, 1, 1))
-end = st.sidebar.date_input("End Date", date.today())
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        prev = df.iloc[i-1]
+        if active_trade:
+            sl_hit, tp_hit = False, False
+            if config['use_sl']:
+                sl_p = active_trade.entry_price * (1 - config['sl_val'] / 100)
+                sl_hit = current['low'] <= sl_p
+            if config['use_tp']:
+                tp_p = active_trade.entry_price * (1 + config['tp_val'] / 100)
+                tp_hit = current['high'] >= tp_p
+            indicator_exit = prev['exit_signal']
 
-short_ema = st.sidebar.slider("Short EMA", 5, 50, 20)
-long_ema = st.sidebar.slider("Long EMA", 20, 200, 50)
+            if sl_hit or tp_hit or indicator_exit:
+                reason = "Stop Loss" if sl_hit else ("Target" if tp_hit else "EMA Cross Exit")
+                active_trade.exit_price = current['open'] * (1 - slippage)
+                active_trade.exit_date = current.name
+                active_trade.exit_reason = reason
+                active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
+                trades.append(active_trade)
+                active_trade = None
+        elif prev['long_signal']:
+            entry_p = current['open'] * (1 + slippage)
+            active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=entry_p)
+    return trades, df
 
-initial_capital = st.sidebar.number_input("Initial Capital", 100000)
-stop_loss_pct = st.sidebar.slider("Stop Loss %", 0.5, 10.0, 2.0) / 100
+# --- 3. STREAMLIT UI ---
+st.set_page_config(layout="wide", page_title="PK Ribbon Performance Pro")
 
-run = st.sidebar.button("Run Backtest")
+st.sidebar.title("🎗️ PK Ribbon Engine")
+symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS")
 
-# -----------------------------
-# MAIN LOGIC
-# -----------------------------
-if run:
+tf_limits = {
+    "1 Minute": {"val": "1m", "max_days": 7},
+    "5 Minutes": {"val": "5m", "max_days": 59},
+    "15 Minutes": {"val": "15m", "max_days": 59},
+    "1 Hour": {"val": "1h", "max_days": 729},
+    "1 Day": {"val": "1d", "max_days": 20000},
+}
 
-    data = yf.download(symbol, start=start, end=end, auto_adjust=True)
+selected_tf_label = st.sidebar.selectbox("Select Timeframe", list(tf_limits.keys()), index=4)
+selected_tf = tf_limits[selected_tf_label]["val"]
+max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
-    # Fix multi-index issue
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-    if data.empty:
-        st.error("No data found. Check symbol or date range.")
-        st.stop()
+# DATE RANGE (Original stable logic)
+fifty_years_ago = date.today() - timedelta(days=50*365)
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
+user_end = st.sidebar.date_input("End Date", value=date.today())
 
-    # Calculate EMAs
-    data['EMA_SHORT'] = data['Close'].ewm(span=short_ema, adjust=False).mean()
-    data['EMA_LONG'] = data['Close'].ewm(span=long_ema, adjust=False).mean()
+st.sidebar.divider()
+st.sidebar.subheader("⚙️ Toggles")
+use_sl = st.sidebar.checkbox("Enable Stop Loss", value=True)
+sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0
+use_tp = st.sidebar.checkbox("Enable Target Profit", value=True)
+tp_val = st.sidebar.slider("Target %", 1.0, 100.0, 25.0) if use_tp else 0
+use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
+slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
-    # Generate signals
-    data['Signal'] = 0
-    data.loc[data['EMA_SHORT'] > data['EMA_LONG'], 'Signal'] = 1
-    data['Position'] = data['Signal'].diff()
+if st.sidebar.button("🚀 Run Backtest"):
+    earliest_allowed = date.today() - timedelta(days=max_days_allowed)
+    final_start = user_start if user_start >= earliest_allowed else earliest_allowed
+    
+    try:
+        data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
+        
+        if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(col).lower() for col in data.columns]
+            data = data.dropna()
+            
+            config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
+            trades, processed_df = run_backtest(data, symbol, config)
 
-    capital = initial_capital
-    position = 0
-    entry_price = 0
-    equity_curve = []
-    trade_results = []
+            if trades:
+                df_trades = pd.DataFrame([vars(t) for t in trades])
+                
+                # --- CALCULATIONS ---
+                wins = df_trades[df_trades['pnl_pct'] > 0]
+                losses = df_trades[df_trades['pnl_pct'] <= 0]
+                win_rate = (len(wins) / len(df_trades)) * 100
+                
+                avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
+                avg_loss_pct = abs(losses['pnl_pct'].mean() * 100) if not losses.empty else 0.0001
+                
+                total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
+                risk_reward = (avg_win_pct / avg_loss_pct)
+                profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
+                expectancy = (win_rate/100 * (avg_win_pct/100)) - ((1 - win_rate/100) * (avg_loss_pct/100))
 
-    for i in range(len(data)):
+                # Streak Logic
+                pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
+                streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
+                max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
+                max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
 
-        price = float(data['Close'].iloc[i])
+                # CAGR & Drawdown
+                df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+                years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
+                cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
+                max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
-        # ENTRY
-        if data['Position'].iloc[i] == 1 and position == 0:
-            entry_price = price
-            position = capital / entry_price
-            capital = 0
+                # --- DASHBOARD UI ---
+                st.subheader("📊 Performance Scorecard")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
+                c2.metric("CAGR", f"{cagr:.2f}%")
+                c3.metric("Success Ratio", f"{win_rate:.1f}%")
+                c4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-        # EXIT
-        elif data['Position'].iloc[i] == -1 and position > 0:
-            capital = position * price
-            pnl_pct = (price - entry_price) / entry_price * 100
-            trade_results.append(pnl_pct)
-            position = 0
+                st.divider()
+                st.subheader("📝 Detailed Trade Summary")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Profit Factor", f"{profit_factor:.2f}")
+                s2.metric("Risk:Reward", f"1:{risk_reward:.2f}")
+                s3.metric("Expectancy", f"{expectancy*100:.2f}%")
+                s4.metric("Avg Return/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
 
-        # STOP LOSS
-        if position > 0 and price <= entry_price * (1 - stop_loss_pct):
-            capital = position * price
-            pnl_pct = (price - entry_price) / entry_price * 100
-            trade_results.append(pnl_pct)
-            position = 0
+                s5, s6, s7, s8 = st.columns(4)
+                s5.metric("Avg Win (%)", f"{avg_win_pct:.2f}%")
+                s6.metric("Avg Loss (%)", f"-{avg_loss_pct:.2f}%")
+                s7.metric("Max Win Streak", f"{max_win_streak}")
+                s8.metric("Max Loss Streak", f"{max_loss_streak}")
 
-        equity = capital + position * price
-        equity_curve.append(equity)
+                s9, s10, s11, s12 = st.columns(4)
+                s9.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
+                s10.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
+                s11.metric("Total Trades", len(df_trades))
+                s12.metric("Final Capital", f"₹{df_trades['equity'].iloc[-1]:,.0f}")
 
-    data['Equity'] = equity_curve
-    final_value = equity_curve[-1]
-
-    # -----------------------------
-    # PERFORMANCE METRICS
-    # -----------------------------
-    total_return = ((final_value - initial_capital) / initial_capital) * 100
-
-    days = (data.index[-1] - data.index[0]).days
-    years = days / 365 if days > 0 else 1
-    cagr = ((final_value / initial_capital) ** (1 / years) - 1) * 100
-
-    wins = len([x for x in trade_results if x > 0])
-    total_trades = len(trade_results)
-    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-    cumulative_max = data['Equity'].cummax()
-    drawdown = (data['Equity'] - cumulative_max) / cumulative_max
-    max_dd = drawdown.min() * 100
-
-    # -----------------------------
-    # DASHBOARD METRICS
-    # -----------------------------
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric("Return %", round(total_return, 2))
-    col2.metric("CAGR %", round(cagr, 2))
-    col3.metric("Win Rate %", round(win_rate, 2))
-    col4.metric("Max Drawdown %", round(max_dd, 2))
-
-    # -----------------------------
-    # EQUITY CURVE
-    # -----------------------------
-    st.subheader("Equity Curve")
-    st.line_chart(data['Equity'])
-
-    # -----------------------------
-    # PRICE + EMA CHART
-    # -----------------------------
-    st.subheader("Price Chart with EMAs")
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Candlestick(
-        x=data.index,
-        open=data['Open'],
-        high=data['High'],
-        low=data['Low'],
-        close=data['Close'],
-        name="Price"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=data.index,
-        y=data['EMA_SHORT'],
-        name=f"EMA {short_ema}"
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=data.index,
-        y=data['EMA_LONG'],
-        name=f"EMA {long_ema}"
-    ))
-
-    fig.update_layout(height=600, xaxis_rangeslider_visible=False)
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.success("Backtest completed successfully ✅")
+                # Charts
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='#00ffcc')), row=2, col=1)
+                fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.dataframe(df_trades)
+                
+                csv = df_trades.to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Download CSV Report", data=csv, file_name=f"{symbol}_audit.csv", mime='text/csv')
+            else:
+                st.warning("No trades found.")
+    except Exception as e:
+        st.error(f"Error: {e}")
