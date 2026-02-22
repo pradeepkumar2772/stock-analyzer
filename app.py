@@ -78,6 +78,7 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
+# THE FIX: No min_value here. We handle validation inside the 'Run' logic.
 user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
@@ -91,8 +92,12 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Master Backtest"):
+    # VALIDATION LOGIC (Moved here to prevent UI crashing)
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     final_start = user_start if user_start >= earliest_allowed else earliest_allowed
+    
+    if user_start < earliest_allowed:
+        st.info(f"💡 Adjusted start date to {final_start} for {selected_tf_label} data limits.")
     
     try:
         data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
@@ -108,7 +113,7 @@ if st.sidebar.button("🚀 Run Master Backtest"):
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
                 
-                # --- MASTER CALCULATIONS ---
+                # --- CALCULATIONS ---
                 wins = df_trades[df_trades['pnl_pct'] > 0]
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 win_rate = (len(wins) / len(df_trades)) * 100
@@ -128,13 +133,13 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
                 expectancy = (win_rate/100 * (avg_win_pct/100)) - ((1 - win_rate/100) * (avg_loss_pct/100))
 
-                # CAGR & MDD
+                # CAGR & Drawdown
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
                 cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
                 max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
-                # --- UI: SCOREBOARD ---
+                # --- DASHBOARD ---
                 st.subheader("📊 Primary Scoreboard")
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
@@ -143,7 +148,6 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 c4.metric("Success Ratio", f"{win_rate:.1f}%")
                 c5.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-                # --- UI: TRADE SUMMARY & STREAKS ---
                 st.divider()
                 st.subheader("📝 Trade Summary & Streaks")
                 s1, s2, s3, s4 = st.columns(4)
@@ -158,7 +162,13 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                 s7.metric("Avg Win (%)", f"{avg_win_pct:.2f}%")
                 s8.metric("Avg Loss (%)", f"-{avg_loss_pct:.2f}%")
 
-                # --- UI: EXIT REASON ANALYSIS ---
+                s9, s10, s11, s12 = st.columns(4)
+                s9.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
+                s10.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
+                s11.metric("Total Trades", len(df_trades))
+                s12.metric("Final Capital", f"₹{df_trades['equity'].iloc[-1]:,.0f}")
+
+                # --- EXIT REASON ANALYSIS ---
                 st.divider()
                 st.subheader("🛡️ Exit Reason Breakdown")
                 exit_analysis = df_trades.groupby('exit_reason')['pnl_pct'].agg(['count', 'sum', 'mean'])
@@ -169,10 +179,10 @@ if st.sidebar.button("🚀 Run Master Backtest"):
                     cols[i].write(f"Count: {int(row['count'])}")
                     cols[i].write(f"Net P&L: :{color}[{row['sum']*100:.2f}%]")
 
-                # --- UI: CHARTS ---
+                # --- CHARTS ---
                 st.divider()
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price Action"), row=1, col=1)
+                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
                 fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
