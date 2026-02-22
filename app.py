@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.express as px
+import plotly.graph_objects as go
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 
@@ -58,7 +59,7 @@ def run_backtest(df, symbol, config):
                 tp_hit = current['high'] >= tp_price
             
             if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "EMA Cross Exit")
+                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -93,7 +94,7 @@ start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
 st.sidebar.divider()
-st.sidebar.subheader("🛡️ RSI Filter Settings")
+st.sidebar.subheader("🛡️ RSI Filter")
 use_rsi_filter = st.sidebar.toggle("Enable RSI Filter", value=False)
 rsi_mode, rsi_val1, rsi_val2 = "Greater Than", 50.0, 70.0
 if use_rsi_filter:
@@ -136,13 +137,10 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 with t1:
                     m1, m2, m3 = st.columns(3); m1.metric("Total Returns (%)", f"{total_ret:.2f}%"); m2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%"); m3.metric("Total Trades", len(df_trades))
                     m4, m5, m6 = st.columns(3); m4.metric("Initial Capital", f"{capital:,.2f}"); m5.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); m6.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%")
-                    m7, m8, m9 = st.columns(3); m7.metric("Risk-Reward Ratio", f"{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A"); m8.metric("Expectancy", f"{(total_ret/len(df_trades)):.2f}"); m9.metric("Calmer Ratio", f"{abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
-
                     st.divider()
                     st.subheader("Monthly Returns")
-                    
-                    df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                     df_trades['year'] = df_trades['exit_date'].dt.year
+                    df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                     pivot = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
                     months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
                     pivot = pivot.reindex(columns=[m for m in months_order if m in pivot.columns])
@@ -163,26 +161,64 @@ if st.sidebar.button("🚀 Generate Full Report"):
                 with t2:
                     st.subheader("Performance & Analytics")
                     col_stats, col_charts = st.columns([1, 2.5])
-                    
                     with col_stats:
-                        st.write("---")
                         st.write(f"**Highest Return:** {df_trades['pnl_pct'].max()*100:.2f}%")
                         st.write(f"**Lowest Return:** {df_trades['pnl_pct'].min()*100:.2f}%")
                         st.write(f"**Avg Win:** {wins['pnl_pct'].mean()*100:.2f}%")
                         st.write(f"**Avg Loss:** {losses['pnl_pct'].mean()*100:.2f}%")
-                        st.write(f"**Calmar Ratio:** {abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
-                        st.write(f"**Sharpe Ratio:** {(df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)):.2f}" if len(df_trades)>1 else "0.0")
-                    
                     with col_charts:
-                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy (Long)", color_discrete_sequence=['#3498db']), use_container_width=True)
-                        
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy", color_discrete_sequence=['#3498db']), use_container_width=True)
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown (Long)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    st.subheader("Advanced Distribution")
-                    st.write("Distribution charts remain here for deep-dive temporal analysis.")
-                    # Placeholder for the distribution charts you shared in the screenshots
-                
+                    # --- NEW PROFESSIONAL CHARTS SECTION ---
+                    c_row1_col1, c_row1_col2 = st.columns(2)
+                    
+                    with c_row1_col1:
+                        # 1. Return by Period (Yearly)
+                        yearly_ret = df_trades.groupby('year')['pnl_pct'].sum() * 100
+                        fig_period = px.bar(yearly_ret, text_auto='.1f', title="Return by Period", color_discrete_sequence=['#3498db'])
+                        fig_period.update_layout(xaxis_title="", yaxis_title="Values", template="plotly_dark")
+                        st.plotly_chart(fig_period, use_container_width=True)
+                    
+                    with c_row1_col2:
+                        # 2. Winners/Losers (By Year)
+                        win_loss_by_year = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
+                        win_loss_by_year.columns = ['Losers', 'Winners']
+                        win_loss_by_year['Total'] = win_loss_by_year['Winners'] + win_loss_by_year['Losers']
+                        
+                        fig_wl = go.Figure()
+                        fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Total'], name='Total', marker_color='#3498db'))
+                        fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Winners'], name='Winners', marker_color='#2ecc71'))
+                        fig_wl.add_trace(go.Bar(x=win_loss_by_year.index, y=win_loss_by_year['Losers'], name='Losers', marker_color='#e74c3c'))
+                        fig_wl.update_layout(barmode='group', title="Winners/Losers", template="plotly_dark", yaxis_title="Values")
+                        st.plotly_chart(fig_wl, use_container_width=True)
+
+                    c_row2_col1, c_row2_col2 = st.columns(2)
+                    
+                    with c_row2_col1:
+                        # 3. Exits (Reasoning)
+                        exit_stats = df_trades['exit_reason'].value_counts(normalize=True) * 100
+                        fig_exits = px.bar(exit_stats, text_auto='.0f', title="Exits", color_discrete_sequence=['#3498db'])
+                        fig_exits.update_layout(showlegend=False, yaxis_title="Values", template="plotly_dark")
+                        st.plotly_chart(fig_exits, use_container_width=True)
+
+                    with c_row2_col2:
+                        # 4. Trades by Day of the Week
+                        df_trades['day'] = df_trades['exit_date'].dt.day_name()
+                        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+                        day_data = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
+                        day_data.columns = ['Losers', 'Winners']
+                        day_data['Total'] = day_data['Winners'] + day_data['Losers']
+                        day_data = day_data.reindex(day_order)
+
+                        fig_day = go.Figure()
+                        fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Total'], name='Total', marker_color='#3498db'))
+                        fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Winners'], name='Winners', marker_color='#2ecc71'))
+                        fig_day.add_trace(go.Bar(x=day_data.index, y=day_data['Losers'], name='Losers', marker_color='#e74c3c'))
+                        fig_day.update_layout(barmode='group', title="Trades by Day of the Week", template="plotly_dark", yaxis_title="Values")
+                        st.plotly_chart(fig_day, use_container_width=True)
+
                 with t4:
                     st.subheader("Trade Audit Log")
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
