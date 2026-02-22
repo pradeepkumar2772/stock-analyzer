@@ -59,11 +59,10 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="PK Ribbon Engine")
+st.set_page_config(layout="wide", page_title="Auto-Correcting Backtest Engine")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
-
-symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
+symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS")
 
 tf_limits = {
     "1 Minute": {"val": "1m", "max_days": 7},
@@ -79,7 +78,9 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
+# DATE RANGE INPUTS
+fifty_years_ago = date.today() - timedelta(days=50*365)
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
@@ -92,24 +93,30 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Backtest"):
-    # Silent Auto-Correction for Date Range
+    # --- AUTO-CORRECTION LOGIC ---
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
-    final_start = user_start if user_start >= earliest_allowed else earliest_allowed
+    final_start = user_start
+    
+    if user_start < earliest_allowed:
+        final_start = earliest_allowed
+        st.info(f"💡 **Auto-Corrected:** Yahoo Finance only allows {max_days_allowed} days for {selected_tf_label}. Start date adjusted to {final_start}.")
     
     if final_start >= user_end:
-        st.error("❌ End date must be after the start date.")
+        st.error("❌ End date must be after the start date. Please check your inputs.")
     else:
         try:
-            with st.spinner('Processing...'):
+            with st.spinner(f'Fetching {selected_tf_label} data...'):
                 data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
                 
                 if data.empty:
-                    st.error("No data returned. Check symbol or date range.")
+                    st.error("No data returned. Try a different symbol or timeframe.")
                 else:
                     if isinstance(data.columns, pd.MultiIndex):
                         data.columns = data.columns.get_level_values(0)
                     data.columns = [str(col).lower() for col in data.columns]
                     data = data.dropna()
+                    
+                    st.success(f"Loaded {len(data)} bars for {symbol}")
                     
                     config = {'use_sl': use_sl, 'sl_val': sl_val, 'use_tp': use_tp, 'tp_val': tp_val, 'use_slippage': use_slippage, 'slippage_val': slippage_val, 'capital': capital}
                     trades, processed_df = run_backtest(data, symbol, config)
@@ -137,9 +144,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                         
                         fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                         st.plotly_chart(fig, use_container_width=True)
-                        st.dataframe(df_trades, use_container_width=True)
-
-                        csv_data = df_trades.to_csv(index=False).encode('utf-8')
-                        st.download_button(label="📥 Download CSV", data=csv_data, file_name=f"{symbol}_backtest.csv", mime='text/csv')
+                        st.dataframe(df_trades)
         except Exception as e:
             st.error(f"Error: {e}")
