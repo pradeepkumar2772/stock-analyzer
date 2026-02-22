@@ -19,13 +19,36 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE ---
+# --- 2. NIFTY 200 CONSTITUENTS ---
+NIFTY_200 = sorted([
+    "ABB.NS", "ACC.NS", "ADANIENSOL.NS", "ADANIENT.NS", "ADANIGREEN.NS", "ADANIPORTS.NS", "ADANIPOWER.NS", 
+    "ATGL.NS", "AWL.NS", "ABCAPITAL.NS", "ABFRL.NS", "ALKEM.NS", "AMBUJACEM.NS", "APOLLOHOSP.NS", "APOLLOTYRE.NS", 
+    "ASHOKLEY.NS", "ASIANPAINT.NS", "ASTRAL.NS", "AUROPHARMA.NS", "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJFINANCE.NS", 
+    "BAJAJFINSV.NS", "BAJAJHLDNG.NS", "BALKRISIND.NS", "BANDHANBNK.NS", "BANKBARODA.NS", "BANKINDIA.NS", "BEL.NS", 
+    "BERGEPAINT.NS", "BHARATFORG.NS", "BHEL.NS", "BPCL.NS", "BHARTIARTL.NS", "BIOCON.NS", "BOSCHLTD.NS", "BRITANNIA.NS", 
+    "CGPOWER.NS", "CANBK.NS", "CHOLAFIN.NS", "CIPLA.NS", "COALINDIA.NS", "COFORGE.NS", "COLPAL.NS", "CONCOR.NS", 
+    "CUMMINSIND.NS", "DLF.NS", "DABUR.NS", "DALBHARAT.NS", "DEEPAKNTR.NS", "DIVISLAB.NS", "DIXON.NS", "DRREDDY.NS", 
+    "EICHERMOT.NS", "ESCORTS.NS", "EXIDEIND.NS", "FEDERALBNK.NS", "FORTIS.NS", "GAIL.NS", "GMRINFRA.NS", "GLAND.NS", 
+    "GODREJCP.NS", "GODREJPROP.NS", "GRASIM.NS", "GUJGASLTD.NS", "HAL.NS", "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS", 
+    "HAVELLS.NS", "HEROMOTOCO.NS", "HINDALCO.NS", "HINDUNILVR.NS", "ICICIBANK.NS", "ICICIGI.NS", "ICICIPRULI.NS", 
+    "IDFCFIRSTB.NS", "ITC.NS", "INDIANB.NS", "IOC.NS", "IRCTC.NS", "IRFC.NS", "IGL.NS", "INDUSINDBK.NS", "INDUSTOWER.NS", 
+    "INFY.NS", "IPCALAB.NS", "JSWENERGY.NS", "JSWSTEEL.NS", "JINDALSTEL.NS", "JIOCINANCE.NS", "JUBLFOOD.NS", "KOTAKBANK.NS", 
+    "LTIM.NS", "LT.NS", "LUPIN.NS", "M&M.NS", "M&MFIN.NS", "MARICO.NS", "MARUTI.NS", "MAXHEALTH.NS", "MAZDOCK.NS", 
+    "MPHASIS.NS", "NHPC.NS", "NMDC.NS", "NTPC.NS", "NESTLEIND.NS", "NYKAA.NS", "OBEROIRLTY.NS", "ONGC.NS", "PAGEIND.NS", 
+    "PATANJALI.NS", "PERSISTENT.NS", "PETRONET.NS", "PIDILITIND.NS", "POLYCAB.NS", "POONAWALLA.NS", "POWERGRID.NS", 
+    "PRESTIGE.NS", "RECLTD.NS", "RELIANCE.NS", "RVNL.NS", "SBICARD.NS", "SBILIFE.NS", "SBIN.NS", "SRF.NS", "SHREECEM.NS", 
+    "SHRIRAMFIN.NS", "SIEMENS.NS", "SONACOMS.NS", "SUNPHARMA.NS", "SUNTV.NS", "SUPREMEIND.NS", "TATACOMM.NS", 
+    "TATACONSUM.NS", "TATAELXSI.NS", "TATAMOTORS.NS", "TATAPOWER.NS", "TATASTEEL.NS", "TCS.NS", "TECHM.NS", "TITAN.NS", 
+    "TORNTPHARM.NS", "TRENT.NS", "ULTRACEMCO.NS", "UPL.NS", "UNITDSPR.NS", "VBL.NS", "VEDL.NS", "VOLTAS.NS", "WIPRO.NS", 
+    "YESBANK.NS", "ZOMATO.NS", "ZYDUSLIFE.NS"
+])
+
+# --- 3. MULTI-STRATEGY ENGINE ---
 def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # Pre-calculate Indicators
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
@@ -47,7 +70,7 @@ def run_backtest(df, symbol, config, strategy_type):
             sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
             tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
             if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
+                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "Signal")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -57,7 +80,7 @@ def run_backtest(df, symbol, config, strategy_type):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 3. UI STYLING ---
+# --- 4. UI STYLING ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
 st.markdown("""
     <style>
@@ -76,15 +99,19 @@ st.markdown("""
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
 
-# --- 4. SIDEBAR ---
+# --- 5. SIDEBAR ---
 st.sidebar.title("🎗️ Strategy Engine")
-symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
+symbol = st.sidebar.selectbox("Symbol", NIFTY_200, index=NIFTY_200.index("BRITANNIA.NS"))
 strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon"])
 tf_map = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", "1 Hour": "1h", "Daily": "1d"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=4)
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
-start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
-end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
+
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    start_date = st.date_input("Start Date", value=date(2010, 1, 1))
+with col2:
+    end_date = st.date_input("End Date", value=date.today())
 
 config = {}
 if strat_choice == "EMA Ribbon":
@@ -97,10 +124,10 @@ use_sl = st.sidebar.toggle("Stop Loss", True); config['sl_val'] = st.sidebar.sli
 use_tp = st.sidebar.toggle("Target Profit", True); config['tp_val'] = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0; config['use_tp'] = use_tp
 use_slip = st.sidebar.toggle("Slippage", True); config['slippage_val'] = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slip else 0; config['use_slippage'] = use_slip
 
-# --- 5. EXECUTION ---
+# --- 6. EXECUTION ---
 if st.sidebar.button("🚀 Run Backtest"):
     try:
-        data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
+        data = yf.download(symbol, start=start_date, end=end_date, interval=tf_map[selected_tf], auto_adjust=True)
         if not data.empty:
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
@@ -157,13 +184,13 @@ if st.sidebar.button("🚀 Run Backtest"):
                     cl, cr = st.columns([1, 2.5])
                     with cl:
                         with st.expander("📊 Backtest Details", expanded=True):
-                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Period", f"{start_date} to {end_date}"); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
                         with st.expander("📈 Return"):
                             draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %"); draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Average Return per Winning Trade", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Average Return per Losing Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Avg Return/Win", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Avg Return/Loss", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
                         with st.expander("🔍 Trade Characteristics"):
                             draw_stat("Total Number of Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}"); draw_stat("Winning Streak", f"{max_w_s}.00"); draw_stat("Lossing Streak", f"{max_l_s}.00")
                         with st.expander("🛡️ Risk-Adjusted Metrics"):
@@ -175,7 +202,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                             draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
                     with cr:
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
-                        
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
@@ -196,5 +222,7 @@ if st.sidebar.button("🚀 Run Backtest"):
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
+            else:
+                st.warning("No trades found for the selected parameters and date range.")
     except Exception as e:
         st.error(f"Execution Error: {e}")
