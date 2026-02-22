@@ -2,177 +2,121 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import requests
-from io import StringIO
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from dataclasses import dataclass
 from datetime import datetime
 
-st.set_page_config(page_title="EMA Backtester Pro", layout="wide")
+# --- 1. CORE DATA STRUCTURES ---
+@dataclass
+class Trade:
+    symbol: str
+    direction: str
+    entry_date: datetime
+    entry_price: float
+    exit_date: datetime = None
+    exit_price: float = None
+    exit_reason: str = None
+    pnl_pct: float = 0.0
 
-st.title("📊 EMA Crossover Backtesting Engine")
+# --- 2. BACKTEST ENGINE ---
+def run_backtest(df, symbol, config):
+    trades = []
+    active_trade = None
+    slippage = config['slippage'] / 100
+    
+    # Simple Strategy: EMA Crossover (Signal Engine)
+    df['ema_fast'] = df['close'].ewm(span=config['ema_fast']).mean()
+    df['ema_slow'] = df['close'].ewm(span=config['ema_slow']).mean()
+    df['signal'] = np.where(df['ema_fast'] > df['ema_slow'], 1, 0)
 
-# =====================================================
-# SYMBOL LOADER (NSE + BSE)
-# =====================================================
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        prev = df.iloc[i-1]
 
-@st.cache_data(ttl=86400)
-def load_nse_symbols():
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-    df = pd.read_csv(StringIO(response.text))
-    df.columns = df.columns.str.strip()
-    df = df[df["SERIES"] == "EQ"]
-    return sorted([s + ".NS" for s in df["SYMBOL"].tolist()])
+        # EXIT LOGIC
+        if active_trade:
+            # Check Stop Loss or Target
+            price_low = current['low']
+            price_high = current['high']
+            
+            sl_hit = price_low <= active_trade.entry_price * (1 - config['sl'] / 100)
+            tp_hit = price_high >= active_trade.entry_price * (1 + config['tp'] / 100)
+            signal_exit = prev['signal'] == 0
 
+            if sl_hit or tp_hit or signal_exit:
+                reason = "Stop Loss" if sl_hit else ("Target" if tp_hit else "Signal")
+                # Conservative Exit: Next Open
+                active_trade.exit_price = current['open'] * (1 - slippage)
+                active_trade.exit_date = current.name
+                active_trade.exit_reason = reason
+                active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
+                trades.append(active_trade)
+                active_trade = None
 
-@st.cache_data(ttl=86400)
-def load_bse_symbols():
-    nse_symbols = load_nse_symbols()
-    return sorted([s.replace(".NS", ".BO") for s in nse_symbols])
+        # ENTRY LOGIC
+        elif prev['signal'] == 1:
+            entry_p = current['open'] * (1 + slippage)
+            active_trade = Trade(
+                symbol=symbol,
+                direction="Long",
+                entry_date=current.name,
+                entry_price=entry_p
+            )
+            
+    return trades, df
 
+# --- 3. STREAMLIT UI ---
+st.set_page_config(layout="wide", page_title="Professional Backtester")
 
-exchange = st.sidebar.radio("Exchange", ["NSE", "BSE"])
+st.sidebar.title("🛠 Engine Settings")
+symbol = st.sidebar.text_input("Enter Symbol (Yahoo Finance)", value="RELIANCE.NS")
+capital = st.sidebar.number_input("Initial Capital", value=100000)
+st.sidebar.divider()
+sl_pct = st.sidebar.slider("Stop Loss %", 0.5, 10.0, 2.0)
+tp_pct = st.sidebar.slider("Target Profit %", 1.0, 20.0, 5.0)
+slippage_pct = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1)
+st.sidebar.divider()
+ema_f = st.sidebar.number_input("Fast EMA", value=9)
+ema_s = st.sidebar.number_input("Slow EMA", value=21)
 
-if exchange == "NSE":
-    symbols = load_nse_symbols()
-else:
-    symbols = load_bse_symbols()
+if st.sidebar.button("🚀 Run Backtest"):
+    with st.spinner('Fetching data and calculating...'):
+        # Data Loading
+        data = yf.download(symbol, period="2y", interval="1d")
+        data.columns = [col.lower() for col in data.columns]
+        
+        config = {'sl': sl_pct, 'tp': tp_pct, 'slippage': slippage_pct, 'ema_fast': ema_f, 'ema_slow': ema_s}
+        trades, processed_df = run_backtest(data, symbol, config)
 
-symbol = st.sidebar.selectbox("🔍 Search Stock", symbols)
+        if not trades:
+            st.error("No trades executed with these settings.")
+        else:
+            # --- METRICS CALCULATIONS ---
+            df_trades = pd.DataFrame([vars(t) for t in trades])
+            win_rate = (len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100
+            total_ret = df_trades['pnl_pct'].sum() * 100
+            
+            # --- DASHBOARD LAYOUT ---
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Trades", len(df_trades))
+            col2.metric("Win Rate", f"{win_rate:.1f}%")
+            col3.metric("Total Return", f"{total_ret:.1f}%")
+            col4.metric("Avg Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
 
-# =====================================================
-# PARAMETERS
-# =====================================================
+            # --- PLOTTING ---
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
+            
+            # Candlestick
+            fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], 
+                                         low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
+            
+            # Equity Curve
+            df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+            fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='green')), row=2, col=1)
+            
+            st.plotly_chart(fig, use_container_width=True)
 
-short_ema = st.sidebar.slider("Short EMA", 5, 50, 20)
-long_ema = st.sidebar.slider("Long EMA", 20, 200, 50)
-
-start_date = st.sidebar.date_input("Start Date", datetime(2020, 1, 1))
-end_date = st.sidebar.date_input("End Date", datetime.today())
-
-# =====================================================
-# FETCH DATA
-# =====================================================
-
-@st.cache_data
-def load_data(symbol, start, end):
-    return yf.download(symbol, start=start, end=end)
-
-data = load_data(symbol, start_date, end_date)
-
-if data.empty:
-    st.error("No data found for this symbol/date range.")
-    st.stop()
-
-# =====================================================
-# STRATEGY LOGIC
-# =====================================================
-
-data["EMA_Short"] = data["Close"].ewm(span=short_ema, adjust=False).mean()
-data["EMA_Long"] = data["Close"].ewm(span=long_ema, adjust=False).mean()
-
-data["Signal"] = 0
-data["Signal"] = np.where(
-    data["EMA_Short"] > data["EMA_Long"], 1, 0
-)
-
-data["Position"] = data["Signal"].diff()
-
-# Strategy Returns
-data["Market Return"] = data["Close"].pct_change()
-data["Strategy Return"] = data["Market Return"] * data["Signal"].shift(1)
-
-data["Equity Curve"] = (1 + data["Strategy Return"]).cumprod()
-
-# =====================================================
-# METRICS
-# =====================================================
-
-total_return = data["Equity Curve"].iloc[-1] - 1
-years = (end_date - start_date).days / 365
-cagr = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
-
-# Win Rate
-trades = data[data["Position"] == 1].index
-wins = 0
-losses = 0
-
-for i in range(len(trades) - 1):
-    entry = data.loc[trades[i], "Close"]
-    exit = data.loc[trades[i + 1], "Close"]
-    if exit > entry:
-        wins += 1
-    else:
-        losses += 1
-
-win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
-
-# Max Drawdown
-roll_max = data["Equity Curve"].cummax()
-drawdown = data["Equity Curve"] / roll_max - 1
-max_dd = drawdown.min()
-
-# =====================================================
-# DASHBOARD METRICS
-# =====================================================
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric("Total Return %", f"{total_return*100:.2f}%")
-col2.metric("CAGR %", f"{cagr*100:.2f}%")
-col3.metric("Win Rate %", f"{win_rate:.2f}%")
-
-st.metric("Max Drawdown %", f"{max_dd*100:.2f}%")
-
-# =====================================================
-# PRICE + EMA CHART
-# =====================================================
-
-fig = go.Figure()
-
-fig.add_trace(go.Candlestick(
-    x=data.index,
-    open=data["Open"],
-    high=data["High"],
-    low=data["Low"],
-    close=data["Close"],
-    name="Price"
-))
-
-fig.add_trace(go.Scatter(
-    x=data.index,
-    y=data["EMA_Short"],
-    line=dict(width=1),
-    name=f"EMA {short_ema}"
-))
-
-fig.add_trace(go.Scatter(
-    x=data.index,
-    y=data["EMA_Long"],
-    line=dict(width=1),
-    name=f"EMA {long_ema}"
-))
-
-fig.update_layout(
-    height=600,
-    xaxis_rangeslider_visible=False
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# =====================================================
-# EQUITY CURVE
-# =====================================================
-
-st.subheader("📈 Strategy Equity Curve")
-
-fig2 = go.Figure()
-
-fig2.add_trace(go.Scatter(
-    x=data.index,
-    y=data["Equity Curve"],
-    name="Equity Curve"
-))
-
-st.plotly_chart(fig2, use_container_width=True)
+            # --- TRADE LOG ---
+            st.subheader("📜 Detailed Trade Log")
+            st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'exit_reason', 'pnl_pct']], use_container_width=True)
