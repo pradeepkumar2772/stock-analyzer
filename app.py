@@ -19,7 +19,7 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE (Baseline + Steve Nison Logic) ---
+# --- 2. MULTI-STRATEGY ENGINE ---
 def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
@@ -36,24 +36,32 @@ def run_backtest(df, symbol, config, strategy_type):
     df['ema_exit'] = df['close'].ewm(span=config.get('ema_exit', 30), adjust=False).mean()
     df['sma_200'] = df['close'].rolling(window=200).mean()
 
-    # --- Candlestick Definitions (Nison Style) ---
+    # --- Candlestick Definitions (Nison Principles) ---
     body_size = np.abs(df['close'] - df['open'])
     lower_shadow = np.minimum(df['open'], df['close']) - df['low']
     upper_shadow = df['high'] - np.maximum(df['open'], df['close'])
     candle_range = df['high'] - df['low']
+    is_green = df['close'] > df['open']
+    is_red = df['close'] < df['open']
 
-    # 1. Hammer (Nison: Lower shadow > 2x Real Body, tiny upper shadow)
+    # 1. Hammer
     df['is_hammer'] = (lower_shadow > (2 * body_size)) & (upper_shadow < (0.1 * candle_range))
     
-    # 2. Bullish Engulfing (Nison: Body covers previous candle body completely)
-    prev_body_size = body_size.shift(1)
-    df['is_bull_engulf'] = (df['close'] > df['open']) & (df['close'].shift(1) < df['open'].shift(1)) & \
+    # 2. Bullish Engulfing
+    df['is_bull_engulf'] = is_green & is_red.shift(1) & \
                            (df['close'] > df['open'].shift(1)) & (df['open'] < df['close'].shift(1))
 
-    # 3. Piercing Line (Nison: Second candle opens lower but closes > 50% of first candle body)
+    # 3. Piercing Line (Fixed the mid_point variable)
     mid_point_prev = (df['open'].shift(1) + df['close'].shift(1)) / 2
-    df['is_piercing'] = (df['close'].shift(1) < df['open'].shift(1)) & (df['close'] > df['open']) & \
-                        (df['open'] < df['low'].shift(1)) & (df['close'] > mid_point_mid_point_prev)
+    df['is_piercing'] = is_red.shift(1) & is_green & \
+                        (df['open'] < df['low'].shift(1)) & (df['close'] > mid_point_prev)
+
+    # 4. Morning Star (Three Candle Bottom Reversal)
+    # Candle 1: Long Red, Candle 2: Small Body Star (Gap Down), Candle 3: Long Green
+    is_star = body_size < (body_size.rolling(window=10).mean() * 0.5)
+    df['is_morning_star'] = is_red.shift(2) & is_star.shift(1) & is_green & \
+                            (df['open'].shift(1) < df['close'].shift(2)) & \
+                            (df['close'] > mid_point_prev.shift(1))
 
     # --- Strategy Signals ---
     if strategy_type == "RSI 60 Cross":
@@ -64,13 +72,16 @@ def run_backtest(df, symbol, config, strategy_type):
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
         df['exit_signal'] = (df['ema_fast'] < df['ema_exit']) & (df['ema_fast'].shift(1) >= df['ema_exit'].shift(1))
 
+    elif strategy_type == "Nison: Morning Star":
+        df['long_signal'] = df['is_morning_star']
+        df['exit_signal'] = (df['close'] < df['low'].rolling(window=3).min()) | (df['close'] < df['ema_exit'])
+
     elif strategy_type == "Nison: Hammer Reversal":
-        # Buy on Hammer after a downtrend (price < 20 EMA)
         df['long_signal'] = df['is_hammer'] & (df['close'] < df['ema_fast'])
         df['exit_signal'] = (df['close'] > df['ema_fast'] * 1.05) | (df['close'] < df['low'].shift(1))
 
     elif strategy_type == "Nison: Bullish Engulfing":
-        df['long_signal'] = df['is_bull_engulf'] & (df['close'] > df['sma_200']) # Trend filter
+        df['long_signal'] = df['is_bull_engulf'] & (df['close'] > df['sma_200'])
         df['exit_signal'] = (df['close'] < df['ema_exit'])
 
     elif strategy_type == "Nison: Piercing Line":
@@ -100,6 +111,7 @@ def run_backtest(df, symbol, config, strategy_type):
 
     elif strategy_type == "ATR Band Breakout":
         sma_20 = df['close'].rolling(window=20).mean()
+        df['atr'] = (df['high'] - df['low']).rolling(window=14).mean()
         u_atr = sma_20 + df['atr']; l_atr = sma_20 - df['atr']
         df['long_signal'] = (df['close'] > u_atr) & (df['close'].shift(1) <= u_atr.shift(1))
         df['exit_signal'] = (df['close'] < l_atr) & (df['close'].shift(1) >= l_atr.shift(1))
@@ -123,14 +135,14 @@ def run_backtest(df, symbol, config, strategy_type):
 
 # --- 3. UI STYLING & SIDEBAR ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
-st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; } .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; } .total-cell { font-weight: bold; color: #fff; background-color: #1e3a5f !important; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
+st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; } .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
 
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
 
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "Nison: Hammer Reversal", "Nison: Bullish Engulfing", "Nison: Piercing Line", "EMA & RSI Synergy", "Double Bottom Breakout", "Fibonacci 61.8% Retracement", "Relative Strength Play", "ATR Band Breakout"])
+strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "Nison: Morning Star", "Nison: Hammer Reversal", "Nison: Bullish Engulfing", "Nison: Piercing Line", "EMA & RSI Synergy", "Double Bottom Breakout", "Fibonacci 61.8% Retracement", "Relative Strength Play", "ATR Band Breakout"])
 tf_map = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", "1 Hour": "1h", "Daily": "1d"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=4)
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
@@ -194,23 +206,15 @@ if st.sidebar.button("🚀 Run Backtest"):
                 with t2:
                     cl, cr = st.columns([1, 2.5])
                     with cl:
-                        with st.expander("📊 Backtest Details", expanded=True):
-                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
                         with st.expander("📈 Return"):
                             draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
-                        with st.expander("🔍 Characteristics"):
-                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Winning Streak", max_w_s); draw_stat("Losing Streak", max_l_s)
-                        with st.expander("🛡️ Risk Metrics"):
-                            draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}")
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
                             draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
-                        with st.expander("🔥 Streak"):
-                            draw_stat("Max Win Streak", max_w_s); draw_stat("Max Loss Streak", max_l_s)
                     with cr:
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Strategy Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
@@ -218,8 +222,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                 with t3:
                     y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
-                    ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
-                    st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
