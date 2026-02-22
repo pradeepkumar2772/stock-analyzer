@@ -2,81 +2,78 @@ import streamlit as st
 import plotly.graph_objects as go
 from datetime import date
 from backtester import *
+from relative_strength import relative_strength
 
-st.set_page_config(page_title="EMA Backtester", layout="wide")
+st.set_page_config(layout="wide")
+st.title("🚀 Pro EMA Backtesting Dashboard")
 
-st.title("📈 EMA Crossover Backtesting Engine")
+# Sidebar
+st.sidebar.header("Strategy Controls")
 
-# Sidebar Inputs
-st.sidebar.header("Strategy Settings")
+symbol = st.sidebar.text_input("Stock", "RELIANCE.NS")
+benchmark = st.sidebar.text_input("Benchmark", "^NSEI")
 
-symbol = st.sidebar.text_input("Stock Symbol (e.g. RELIANCE.NS)", "RELIANCE.NS")
-start = st.sidebar.date_input("Start Date", date(2020, 1, 1))
-end = st.sidebar.date_input("End Date", date.today())
+start = st.sidebar.date_input("Start", date(2018, 1, 1))
+end = st.sidebar.date_input("End", date.today())
 
-initial_capital = st.sidebar.number_input("Initial Capital", 100000)
-brokerage = st.sidebar.number_input("Brokerage %", 0.05) / 100
-slippage = st.sidebar.number_input("Slippage %", 0.05) / 100
-stop_loss = st.sidebar.number_input("Stop Loss %", 2.0) / 100
+short_ema = st.sidebar.slider("Short EMA", 5, 50, 20)
+long_ema = st.sidebar.slider("Long EMA", 20, 200, 50)
 
-run = st.sidebar.button("Run Backtest")
+initial_capital = st.sidebar.number_input("Capital", 100000)
+
+stop_loss = st.sidebar.slider("Stop Loss %", 0.5, 10.0, 2.0) / 100
+
+run = st.sidebar.button("Run Analysis")
 
 if run:
 
     data = fetch_data(symbol, start, end)
-    data = add_ema(data)
+    data = add_ema(data, short_ema, long_ema)
     data = generate_signals(data)
 
-    data, final_value, trades, trade_log = backtest(
+    data, final_value, trade_results, trade_log = backtest(
         data,
         initial_capital,
-        brokerage,
-        slippage,
-        stop_loss
+        stop_loss_pct=stop_loss
     )
 
-    metrics = performance_metrics(data, initial_capital)
-    suggestion = strategy_suggestion(metrics)
+    metrics = performance_metrics(data, trade_results, initial_capital)
 
-    col1, col2 = st.columns(2)
+    # TOP METRICS DASHBOARD
+    col1, col2, col3, col4 = st.columns(4)
 
-    with col1:
-        st.subheader("Performance Metrics")
-        st.write(metrics)
+    col1.metric("Return %", metrics["Total Return %"])
+    col2.metric("CAGR %", metrics["CAGR %"])
+    col3.metric("Win Rate %", metrics["Win Rate %"])
+    col4.metric("Max DD %", metrics["Max Drawdown %"])
 
-    with col2:
-        st.subheader("Strategy Verdict")
-        st.success(suggestion)
-
-    # Equity Curve
+    # EQUITY CURVE
     st.subheader("Equity Curve")
     st.line_chart(data['Equity'])
 
-    # Candlestick Chart
-    st.subheader("Price Chart")
+    # CANDLESTICK
+    st.subheader("Price + EMA")
 
-    fig = go.Figure(data=[go.Candlestick(
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
         x=data.index,
         open=data['Open'],
         high=data['High'],
         low=data['Low'],
         close=data['Close']
-    )])
-
-    fig.add_trace(go.Scatter(
-        x=data.index,
-        y=data['EMA_SHORT'],
-        name="EMA 20"
     ))
 
-    fig.add_trace(go.Scatter(
-        x=data.index,
-        y=data['EMA_LONG'],
-        name="EMA 50"
-    ))
+    fig.add_trace(go.Scatter(x=data.index, y=data['EMA_SHORT'], name="EMA Short"))
+    fig.add_trace(go.Scatter(x=data.index, y=data['EMA_LONG'], name="EMA Long"))
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Trade Log
+    # RELATIVE STRENGTH
+    st.subheader("Relative Strength vs Benchmark")
+
+    rs_df = relative_strength(symbol, benchmark, start, end)
+    st.line_chart(rs_df)
+
+    # TRADE LOG
     st.subheader("Trade Log")
     st.dataframe(trade_log)
