@@ -19,23 +19,25 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE (Restored + ATR Book Strategy) ---
+# --- 2. MULTI-STRATEGY ENGINE (Baseline + Book Strategies) ---
 def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # Pre-calculate Indicators
+    # --- Indicator Pre-calculations ---
+    # Standard RSI Math
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    df['ema_fast'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
-    df['ema_slow'] = df['close'].ewm(span=config.get('ema_slow', 50), adjust=False).mean()
+    # EMA Ribbon Math
+    df['ema_f'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
+    df['ema_s'] = df['close'].ewm(span=config.get('ema_slow', 50), adjust=False).mean()
     df['ema_exit'] = df['close'].ewm(span=config.get('ema_exit', 30), adjust=False).mean()
 
-    # ATR Calculation (Required for ATR Band Breakout from the book)
+    # ATR Calculation (Book: Chapter 10)
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
@@ -43,26 +45,38 @@ def run_backtest(df, symbol, config, strategy_type):
     df['atr'] = tr.rolling(window=14).mean()
     df['sma_20'] = df['close'].rolling(window=20).mean()
     
+    # HHV / LLV (Book: Mechanical Systems)
+    h_per = config.get('hhv_period', 20)
+    df['hhv'] = df['high'].rolling(window=h_per).max()
+    df['llv'] = df['low'].rolling(window=h_per).min()
+    
+    # --- Strategy Mapping ---
     if strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
+        
     elif strategy_type == "ATR Band Breakout":
-        # Logic: Buy when price crosses SMA + ATR, Exit when price breaks below SMA - ATR
         df['upper_band'] = df['sma_20'] + df['atr']
         df['lower_band'] = df['sma_20'] - df['atr']
         df['long_signal'] = (df['close'] > df['upper_band']) & (df['close'].shift(1) <= df['upper_band'].shift(1))
         df['exit_signal'] = (df['close'] < df['lower_band']) & (df['close'].shift(1) >= df['lower_band'].shift(1))
+        
+    elif strategy_type == "HHV/LLV Breakout":
+        df['long_signal'] = (df['close'] > df['hhv'].shift(1))
+        df['exit_signal'] = (df['close'] < df['llv'].shift(1))
+        
     else: # EMA Ribbon
-        df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
-        df['exit_signal'] = (df['ema_fast'] < df['ema_exit']) & (df['ema_fast'].shift(1) >= df['ema_exit'].shift(1))
+        df['long_signal'] = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
+        df['exit_signal'] = (df['ema_f'] < df['ema_exit']) & (df['ema_f'].shift(1) >= df['ema_exit'].shift(1))
 
+    # --- Trade Execution Loop ---
     for i in range(1, len(df)):
         current = df.iloc[i]; prev = df.iloc[i-1]
         if active_trade:
             sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
             tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
             if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "System Builder")
+                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "Signal Exit")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -94,19 +108,14 @@ def draw_stat(label, value):
 # --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "ATR Band Breakout"])
+strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "ATR Band Breakout", "HHV/LLV Breakout"])
 tf_map = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", "1 Hour": "1h", "Daily": "1d"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=4)
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
 start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
-config = {}
-if strat_choice == "EMA Ribbon":
-    config['ema_fast'] = st.sidebar.number_input("Fast EMA", 20)
-    config['ema_slow'] = st.sidebar.number_input("Slow EMA", 50)
-    config['ema_exit'] = st.sidebar.number_input("Exit EMA", 30)
-
+config = {'ema_fast': 20, 'ema_slow': 50, 'ema_exit': 30, 'hhv_period': 20}
 st.sidebar.divider()
 use_sl = st.sidebar.toggle("Stop Loss", True); config['sl_val'] = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0; config['use_sl'] = use_sl
 use_tp = st.sidebar.toggle("Target Profit", True); config['tp_val'] = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0; config['use_tp'] = use_tp
@@ -127,7 +136,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # --- FIX: Grouping columns created BEFORE grouping occurs ---
+                # --- FIX: Create year/month BEFORE grouping ---
                 df_trades['year'] = df_trades['exit_date'].dt.year
                 df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                 
@@ -175,6 +184,8 @@ if st.sidebar.button("🚀 Run Backtest"):
                             draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Max Drawdown", f"{mdd:.2f}%"); draw_stat("Avg Drawdown", f"{drawdown.mean()*100:.2f}%")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f}%"); draw_stat("Risk-Reward", f"{rr:.2f}")
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
                             draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
@@ -182,14 +193,20 @@ if st.sidebar.button("🚀 Run Backtest"):
                             draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
                     with cr:
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
+                        
 
                 with t3:
                     y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
-                    
                     ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#2ecc71'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
+                    df_trades['day'] = df_trades['exit_date'].dt.day_name(); day_d = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
+                    day_d.columns = ['Losers', 'Winners']; day_d = day_d.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+                    f4 = go.Figure()
+                    for c, color in zip(['Winners', 'Losers'], ['#2ecc71', '#e74c3c']): f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker=dict(color=color), text=day_d[c], textposition='outside'))
+                    st.plotly_chart(f4.update_layout(barmode='group', title="Trades by Day of Week", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
