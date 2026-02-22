@@ -59,7 +59,7 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="PK Ribbon Performance Pro")
+st.set_page_config(layout="wide", page_title="PK Ribbon Master Audit")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 symbol = st.sidebar.text_input("Symbol", value="RELIANCE.NS").upper()
@@ -78,9 +78,7 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-# DATE RANGE (Stable version logic)
-fifty_years_ago = date.today() - timedelta(days=50*365)
-user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
+user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1))
 user_end = st.sidebar.date_input("End Date", value=date.today())
 
 st.sidebar.divider()
@@ -92,13 +90,12 @@ tp_val = st.sidebar.slider("Target %", 1.0, 100.0, 25.0) if use_tp else 0
 use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
-if st.sidebar.button("🚀 Run Backtest"):
+if st.sidebar.button("🚀 Run Master Backtest"):
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     final_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
     try:
         data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
-        
         if not data.empty:
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
@@ -111,31 +108,34 @@ if st.sidebar.button("🚀 Run Backtest"):
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
                 
-                # --- CALCULATIONS ---
+                # --- MASTER CALCULATIONS ---
                 wins = df_trades[df_trades['pnl_pct'] > 0]
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 win_rate = (len(wins) / len(df_trades)) * 100
                 total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
                 
-                # Duration & Exit Stats
+                # Duration & Streaks
                 df_trades['duration'] = df_trades['exit_date'] - df_trades['entry_date']
                 avg_holding = df_trades['duration'].mean()
-                exit_analysis = df_trades.groupby('exit_reason')['pnl_pct'].agg(['count', 'sum', 'mean'])
-                
-                # Performance Math
+                pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
+                streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
+                max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
+                max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
+
+                # Advanced Metrics
                 avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
                 avg_loss_pct = abs(losses['pnl_pct'].mean() * 100) if not losses.empty else 0.0001
-                risk_reward = (avg_win_pct / avg_loss_pct)
                 profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
+                expectancy = (win_rate/100 * (avg_win_pct/100)) - ((1 - win_rate/100) * (avg_loss_pct/100))
 
-                # CAGR & Drawdown
+                # CAGR & MDD
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
                 cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
                 max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
-                # --- SCOREBOARD ---
-                st.subheader("📊 Performance Scoreboard")
+                # --- UI: SCOREBOARD ---
+                st.subheader("📊 Primary Scoreboard")
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
                 c2.metric("Total Returns (%)", f"{total_ret_pct*100:.2f}%")
@@ -143,30 +143,41 @@ if st.sidebar.button("🚀 Run Backtest"):
                 c4.metric("Success Ratio", f"{win_rate:.1f}%")
                 c5.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-                # --- EXIT ANALYSIS ---
+                # --- UI: TRADE SUMMARY & STREAKS ---
                 st.divider()
-                st.subheader("🛡️ Exit Reason Analysis")
+                st.subheader("📝 Trade Summary & Streaks")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Profit Factor", f"{profit_factor:.2f}")
+                s2.metric("Risk:Reward", f"1:{(avg_win_pct/avg_loss_pct):.2f}")
+                s3.metric("Expectancy", f"{expectancy*100:.2f}%")
+                s4.metric("Avg Holding Period", str(avg_holding).split('.')[0])
+
+                s5, s6, s7, s8 = st.columns(4)
+                s5.metric("Max Win Streak", f"{max_win_streak}")
+                s6.metric("Max Loss Streak", f"{max_loss_streak}")
+                s7.metric("Avg Win (%)", f"{avg_win_pct:.2f}%")
+                s8.metric("Avg Loss (%)", f"-{avg_loss_pct:.2f}%")
+
+                # --- UI: EXIT REASON ANALYSIS ---
+                st.divider()
+                st.subheader("🛡️ Exit Reason Breakdown")
+                exit_analysis = df_trades.groupby('exit_reason')['pnl_pct'].agg(['count', 'sum', 'mean'])
                 cols = st.columns(len(exit_analysis))
                 for i, (reason, row) in enumerate(exit_analysis.iterrows()):
                     color = "green" if row['sum'] > 0 else "red"
                     cols[i].markdown(f"**{reason}**")
                     cols[i].write(f"Count: {int(row['count'])}")
                     cols[i].write(f"Net P&L: :{color}[{row['sum']*100:.2f}%]")
-                    cols[i].write(f"Avg: {row['mean']*100:.2f}%")
 
-                # Charts
+                # --- UI: CHARTS ---
                 st.divider()
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
+                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price Action"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", fill='tozeroy', line=dict(color='#00ffcc')), row=2, col=1)
                 fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                st.subheader("📜 Detailed Trade Log")
                 st.dataframe(df_trades[['entry_date', 'exit_date', 'exit_reason', 'pnl_pct', 'duration']], use_container_width=True)
-                
-                csv = df_trades.to_csv(index=False).encode('utf-8')
-                st.download_button(label="📥 Download Audit CSV", data=csv, file_name=f"{symbol}_audit.csv", mime='text/csv')
             else:
                 st.warning("No trades found.")
     except Exception as e:
