@@ -66,6 +66,7 @@ def run_backtest(df, symbol, config, strategy_type):
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20'].shift(1)) & (df['close'] > df['ema_20'])
         df['exit_signal'] = (df['close'] < df['ema_15'])
+        
     elif strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
