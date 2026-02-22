@@ -78,7 +78,7 @@ max_days_allowed = tf_limits[selected_tf_label]["max_days"]
 
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 
-# DATE RANGE INPUTS (KEPT EXACTLY AS PER YOUR STABLE VERSION)
+# DATE RANGE (Original stable logic)
 fifty_years_ago = date.today() - timedelta(days=50*365)
 user_start = st.sidebar.date_input("Start Date", value=date(2020, 1, 1), min_value=fifty_years_ago)
 user_end = st.sidebar.date_input("End Date", value=date.today())
@@ -96,9 +96,6 @@ if st.sidebar.button("🚀 Run Backtest"):
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     final_start = user_start if user_start >= earliest_allowed else earliest_allowed
     
-    if user_start < earliest_allowed:
-        st.info(f"💡 Adjusted Start Date to {final_start} for {selected_tf_label}.")
-
     try:
         data = yf.download(symbol, start=final_start, end=user_end, interval=selected_tf, auto_adjust=True)
         
@@ -115,33 +112,31 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades = pd.DataFrame([vars(t) for t in trades])
                 
                 # --- CALCULATIONS ---
-                total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
                 wins = df_trades[df_trades['pnl_pct'] > 0]
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 win_rate = (len(wins) / len(df_trades)) * 100
                 
-                # CAGR
-                days_diff = (processed_df.index[-1] - processed_df.index[0]).days
-                years = days_diff / 365.25 if days_diff > 0 else 1
-                cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / years) - 1) * 100
+                avg_win_pct = wins['pnl_pct'].mean() * 100 if not wins.empty else 0
+                avg_loss_pct = abs(losses['pnl_pct'].mean() * 100) if not losses.empty else 0.0001
                 
-                # Profit Factor & RR
-                avg_win = wins['pnl_pct'].mean() if not wins.empty else 0
-                avg_loss = abs(losses['pnl_pct'].mean()) if not losses.empty else 0.0001
-                risk_reward = avg_win / avg_loss
+                total_ret_pct = (df_trades['pnl_pct'] + 1).prod() - 1
+                risk_reward = (avg_win_pct / avg_loss_pct)
                 profit_factor = wins['pnl_pct'].sum() / abs(losses['pnl_pct'].sum()) if not losses.empty else wins['pnl_pct'].sum()
-                
-                # Streaks
+                expectancy = (win_rate/100 * (avg_win_pct/100)) - ((1 - win_rate/100) * (avg_loss_pct/100))
+
+                # Streak Logic
                 pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
                 streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
                 max_win_streak = streak[pnl_bool == 1].max() if not wins.empty else 0
                 max_loss_streak = streak[pnl_bool == 0].max() if not losses.empty else 0
 
-                # Drawdown
+                # CAGR & Drawdown
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+                years = (processed_df.index[-1] - processed_df.index[0]).days / 365.25
+                cagr = (((capital * (1 + total_ret_pct)) / capital) ** (1 / (years if years > 0 else 1)) - 1) * 100
                 max_dd = ((df_trades['equity'] - df_trades['equity'].cummax()) / df_trades['equity'].cummax()).min() * 100
 
-                # --- DASHBOARD ---
+                # --- DASHBOARD UI ---
                 st.subheader("📊 Performance Scorecard")
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Net Profit", f"₹{(df_trades['equity'].iloc[-1] - capital):,.0f}")
@@ -150,14 +145,26 @@ if st.sidebar.button("🚀 Run Backtest"):
                 c4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
                 st.divider()
-                st.subheader("📝 Trade Summary")
+                st.subheader("📝 Detailed Trade Summary")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Profit Factor", f"{profit_factor:.2f}")
                 s2.metric("Risk:Reward", f"1:{risk_reward:.2f}")
-                s3.metric("Max Win Streak", f"{max_win_streak}")
-                s4.metric("Max Loss Streak", f"{max_loss_streak}")
+                s3.metric("Expectancy", f"{expectancy*100:.2f}%")
+                s4.metric("Avg Return/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
 
-                # Chart
+                s5, s6, s7, s8 = st.columns(4)
+                s5.metric("Avg Win (%)", f"{avg_win_pct:.2f}%")
+                s6.metric("Avg Loss (%)", f"-{avg_loss_pct:.2f}%")
+                s7.metric("Max Win Streak", f"{max_win_streak}")
+                s8.metric("Max Loss Streak", f"{max_loss_streak}")
+
+                s9, s10, s11, s12 = st.columns(4)
+                s9.metric("Best Trade", f"{df_trades['pnl_pct'].max()*100:.2f}%")
+                s10.metric("Worst Trade", f"{df_trades['pnl_pct'].min()*100:.2f}%")
+                s11.metric("Total Trades", len(df_trades))
+                s12.metric("Final Capital", f"₹{df_trades['equity'].iloc[-1]:,.0f}")
+
+                # Charts
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Equity Curve", line=dict(color='#00ffcc')), row=2, col=1)
@@ -165,5 +172,10 @@ if st.sidebar.button("🚀 Run Backtest"):
                 st.plotly_chart(fig, use_container_width=True)
                 
                 st.dataframe(df_trades)
+                
+                csv = df_trades.to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Download CSV Report", data=csv, file_name=f"{symbol}_audit.csv", mime='text/csv')
+            else:
+                st.warning("No trades found.")
     except Exception as e:
         st.error(f"Error: {e}")
