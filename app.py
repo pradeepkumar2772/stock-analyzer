@@ -25,7 +25,7 @@ def run_backtest(df, symbol, config, strategy_type):
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # --- Indicator Math ---
+    # --- Indicator Calculations ---
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
@@ -94,23 +94,19 @@ def run_backtest(df, symbol, config, strategy_type):
         df['exit_signal'] = (df['close'] < l_atr) & (df['close'].shift(1) >= l_atr.shift(1))
         
     elif strategy_type == "HHV/LLV Breakout":
-        df['long_signal'] = (df['close'] > df['hhv'].shift(1))
-        df['exit_signal'] = (df['close'] < df['llv'].shift(1))
+        df['long_signal'] = (df['close'] > df['hhv'].shift(1)); df['exit_signal'] = (df['close'] < df['llv'].shift(1))
 
     elif strategy_type == "Double Bottom Breakout":
-        df['long_signal'] = (df['close'] > df['neckline'].shift(1))
-        df['exit_signal'] = (df['close'] < df['ema_exit'])
+        df['long_signal'] = (df['close'] > df['neckline'].shift(1)); df['exit_signal'] = (df['close'] < df['ema_exit'])
 
     elif strategy_type == "Fibonacci 61.8% Retracement":
-        uptrend = df['close'] > df['sma_200']
-        fib = df['hhv'] - ((df['hhv'] - df['llv']) * 0.618)
+        uptrend = df['close'] > df['sma_200']; fib = df['hhv'] - ((df['hhv'] - df['llv']) * 0.618)
         df['long_signal'] = uptrend & (df['low'] <= fib) & (df['close'] > df['high'].shift(1))
         df['exit_signal'] = df['close'] < df['llv'].shift(1)
 
     elif strategy_type == "Relative Strength Play":
         stock_ret = df['close'].pct_change(periods=55)
-        df['long_signal'] = (stock_ret > 0) & (df['close'] > df['ema_fast'])
-        df['exit_signal'] = (df['close'] < df['ema_slow'])
+        df['long_signal'] = (stock_ret > 0) & (df['close'] > df['ema_fast']); df['exit_signal'] = (df['close'] < df['ema_slow'])
 
     # --- Backtest Loop ---
     for i in range(1, len(df)):
@@ -166,8 +162,9 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date'])
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                 
+                # --- ALL PERFORMANCE PARAMETERS RESTORED ---
+                df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
@@ -206,22 +203,41 @@ if st.sidebar.button("🚀 Run Backtest"):
                     with cl:
                         with st.expander("📊 Performance", expanded=True):
                             draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
+                        with st.expander("📈 Returns"):
+                            draw_stat("Total Ret", f"{total_ret:.2f}%"); draw_stat("Avg Ret/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%"); draw_stat("Highest Ret", f"{df_trades['pnl_pct'].max()*100:.2f}%"); draw_stat("Lowest Ret", f"{df_trades['pnl_pct'].min()*100:.2f}%")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Max DD", f"{mdd:.2f}%"); draw_stat("Avg DD", f"{drawdown.mean()*100:.2f}%")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f}%"); draw_stat("Risk-Reward", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                        with st.expander("🔍 Characteristics"):
+                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses))
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
                             draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                         with st.expander("🔥 Streak"):
                             draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
+                        with st.expander("🎯 Strategy Context"):
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start", start_str); draw_stat("End", end_str)
                     with cr:
                         st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Strategy Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
+                        
 
                 with t3:
                     y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
+                    wl_y = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
+                    wl_y.columns = ['Losers', 'Winners']; f2 = go.Figure()
+                    for c, color in zip(['Winners', 'Losers'], ['#2ecc71', '#e74c3c']): f2.add_trace(go.Bar(x=wl_y.index, y=wl_y[c], name=c, marker=dict(color=color), text=wl_y[c], textposition='outside'))
+                    st.plotly_chart(f2.update_layout(barmode='group', title="Winners vs Losers (Yearly)", template="plotly_dark"), use_container_width=True)
                     ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
-                    st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#2ecc71'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
+                    st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
+                    df_trades['day'] = df_trades['exit_date'].dt.day_name(); day_d = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
+                    day_d.columns = ['Losers', 'Winners']; day_d = day_d.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+                    f4 = go.Figure()
+                    for c, color in zip(['Winners', 'Losers'], ['#2ecc71', '#e74c3c']): f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker=dict(color=color), text=day_d[c], textposition='outside'))
+                    st.plotly_chart(f4.update_layout(barmode='group', title="Trades by Day of Week", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
