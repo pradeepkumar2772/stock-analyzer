@@ -19,20 +19,19 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE (Updated with Book Logic) ---
+# --- 2. MULTI-STRATEGY ENGINE (Baseline Logic + Book Strategies) ---
 def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # --- Indicator Pre-calculations ---
-    # Standard RSI (Used for RSI 60 and RSI Divergence Logic)
+    # Pre-calculate Indicators
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    # ATR Calculation (For ATR Band Breakout Strategy)
+    # ATR Calculation (Book Strategy: Chapter 10)
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
@@ -40,36 +39,32 @@ def run_backtest(df, symbol, config, strategy_type):
     df['atr'] = tr.rolling(window=14).mean()
     df['sma_20'] = df['close'].rolling(window=20).mean()
     
-    # HHV / LLV (For Price Breakout Strategy)
-    lookback = config.get('hhv_period', 20)
-    df['hhv'] = df['high'].rolling(window=lookback).max()
-    df['llv'] = df['low'].rolling(window=lookback).min()
-
-    # --- Strategy Signal Mapping ---
+    # HHV / LLV (Book Strategy: Mechanical Systems)
+    h_per = config.get('hhv_period', 20)
+    df['hhv'] = df['high'].rolling(window=h_per).max()
+    df['llv'] = df['low'].rolling(window=h_per).min()
+    
+    # EMA Ribbon (Baseline)
+    df['ema_fast'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
+    df['ema_slow'] = df['close'].ewm(span=config.get('ema_slow', 50), adjust=False).mean()
+    df['ema_exit'] = df['close'].ewm(span=config.get('ema_exit', 30), adjust=False).mean()
+    
+    # Strategy Logic Mapping
     if strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
-    
     elif strategy_type == "ATR Band Breakout":
-        # Strategy: Buy when price crosses SMA + ATR, Exit when price breaks below SMA - ATR
         df['upper_band'] = df['sma_20'] + df['atr']
         df['lower_band'] = df['sma_20'] - df['atr']
         df['long_signal'] = (df['close'] > df['upper_band']) & (df['close'].shift(1) <= df['upper_band'].shift(1))
         df['exit_signal'] = (df['close'] < df['lower_band']) & (df['close'].shift(1) >= df['lower_band'].shift(1))
-
     elif strategy_type == "HHV/LLV Breakout":
-        # Strategy: Buy on breakout of highest high of X periods
         df['long_signal'] = (df['close'] > df['hhv'].shift(1))
         df['exit_signal'] = (df['close'] < df['llv'].shift(1))
-
     else: # EMA Ribbon
-        df['ema_fast'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
-        df['ema_slow'] = df['close'].ewm(span=config.get('ema_slow', 50), adjust=False).mean()
-        df['ema_exit'] = df['close'].ewm(span=config.get('ema_exit', 30), adjust=False).mean()
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
         df['exit_signal'] = (df['ema_fast'] < df['ema_exit']) & (df['ema_fast'].shift(1) >= df['ema_exit'].shift(1))
 
-    # --- Trade Loop ---
     for i in range(1, len(df)):
         current = df.iloc[i]; prev = df.iloc[i-1]
         if active_trade:
@@ -86,7 +81,7 @@ def run_backtest(df, symbol, config, strategy_type):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 3. UI STYLING (SAME AS BASELINE) ---
+# --- 3. UI STYLING ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
 st.markdown("""
     <style>
@@ -108,30 +103,27 @@ def draw_stat(label, value):
 # --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-# Updated dropdown with Book Strategies
 strat_choice = st.sidebar.selectbox("Select Strategy", ["RSI 60 Cross", "EMA Ribbon", "ATR Band Breakout", "HHV/LLV Breakout"])
-
 tf_map = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", "1 Hour": "1h", "Daily": "1d"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=4)
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
-start_str = st.sidebar.text_input("Start Date", value="2015-01-01")
+start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
 config = {}
-# Context-specific sidebar inputs
 if strat_choice == "EMA Ribbon":
     config['ema_fast'] = st.sidebar.number_input("Fast EMA", 20)
     config['ema_slow'] = st.sidebar.number_input("Slow EMA", 50)
     config['ema_exit'] = st.sidebar.number_input("Exit EMA", 30)
 elif strat_choice == "HHV/LLV Breakout":
-    config['hhv_period'] = st.sidebar.slider("Breakout Period", 5, 50, 20)
+    config['hhv_period'] = st.sidebar.slider("HHV Period", 5, 50, 20)
 
 st.sidebar.divider()
 use_sl = st.sidebar.toggle("Stop Loss", True); config['sl_val'] = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0; config['use_sl'] = use_sl
 use_tp = st.sidebar.toggle("Target Profit", True); config['tp_val'] = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0; config['use_tp'] = use_tp
 use_slip = st.sidebar.toggle("Slippage", True); config['slippage_val'] = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slip else 0; config['use_slippage'] = use_slip
 
-# --- 5. EXECUTION (Logic remains exactly same as baseline) ---
+# --- 5. EXECUTION ---
 if st.sidebar.button("🚀 Run Backtest"):
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
@@ -146,7 +138,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Calculations & Tabs (Copied from baseline)
+                # --- ALL PERFORMANCE PARAMETERS (Tab 1 & 2) ---
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
@@ -168,15 +160,63 @@ if st.sidebar.button("🚀 Run Backtest"):
                     r2c1, r2c2, r2c3, r2c4 = st.columns(4)
                     r2c1.metric("Initial Capital", f"{capital:,.2f}"); r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); r2c3.metric("CAGR", f"{cagr:.2f}%"); r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
                     r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-                    r3c1.metric("Risk-Reward Ratio", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe Ratio", f"{sharpe:.2f}"); r3c4.metric("Calmer Ratio", f"{calmar:.2f}")
+                    r3c1.metric("Risk-Reward Ratio", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe Ratio", f"{sharpe:.2f}"); r3c4.metric("Calmar Ratio", f"{calmar:.2f}")
+                    st.divider()
+                    st.subheader("Monthly Returns")
+                    df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
+                    piv = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
+                    piv = piv.reindex(columns=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']).fillna(0)
+                    piv['Total'] = piv.sum(axis=1)
+                    html = "<table class='report-table'><thead><tr><th>Year</th>" + "".join([f"<th>{m}</th>" for m in piv.columns]) + "</tr></thead><tbody>"
+                    for yr, row in piv.iloc[::-1].iterrows():
+                        html += f"<tr><td>{yr}</td>"
+                        for col, val in row.items():
+                            cls = "profit" if val > 0 else ("loss" if val < 0 else ""); cls = "total-cell" if col == "Total" else cls
+                            html += f"<td class='{cls}'>{f'{val:.2f}%' if val != 0 else '-'}</td>"
+                        html += "</tr>"
+                    st.markdown(html + "</tbody></table>", unsafe_allow_html=True)
+
+                with t2:
+                    cl, cr = st.columns([1, 2.5])
+                    with cl:
+                        with st.expander("📊 Backtest Details", expanded=True):
+                            draw_stat("Strategy", strat_choice); draw_stat("Scrip", symbol); draw_stat("Start Date", start_str); draw_stat("End Date", end_str); draw_stat("Duration", f"{duration.days // 365}Y, {duration.days % 365 // 30}M")
+                        with st.expander("📈 Return"):
+                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %"); draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
+                        with st.expander("📉 Drawdown"):
+                            draw_stat("Maximum Drawdown", f"{mdd:.2f} %"); draw_stat("Average Drawdown", f"{drawdown.mean()*100:.2f} %")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Loss Rate", f"{(len(losses)/len(df_trades)*100):.2f} %"); draw_stat("Avg Return per Win", f"{wins['pnl_pct'].mean()*100:.2f} %"); draw_stat("Avg Return per Loss", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                        with st.expander("🔍 Trade Characteristics"):
+                            draw_stat("Total Trades", len(df_trades)); draw_stat("Profit Trades", len(wins)); draw_stat("Loss Trades", len(losses)); draw_stat("Winning Streak", max_w_s); draw_stat("Losing Streak", max_l_s)
+                        with st.expander("🛡️ Risk Metrics"):
+                            draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
+                        with st.expander("⏱️ Holding Period"):
+                            df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
+                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
+                    with cr:
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve", color_discrete_sequence=['#3498db']), use_container_width=True)
-                    st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
+                    y_r = df_trades.groupby('year')['pnl_pct'].sum() * 100
+                    st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
+                    wl_y = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
+                    wl_y.columns = ['Losers', 'Winners']; wl_y['Total'] = wl_y['Winners'] + wl_y['Losers']
+                    f2 = go.Figure()
+                    for c, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']): f2.add_trace(go.Bar(x=wl_y.index, y=wl_y[c], name=c, marker=dict(color=color), text=wl_y[c], textposition='outside'))
+                    st.plotly_chart(f2.update_layout(barmode='group', title="Winners vs Losers (Yearly)", template="plotly_dark"), use_container_width=True)
+                    ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
+                    st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
+                    df_trades['day'] = df_trades['exit_date'].dt.day_name(); day_d = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
+                    day_d.columns = ['Losers', 'Winners']; day_d = day_d.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+                    f4 = go.Figure()
+                    for c, color in zip(['Winners', 'Losers'], ['#2ecc71', '#e74c3c']): f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker=dict(color=color), text=day_d[c], textposition='outside'))
+                    st.plotly_chart(f4.update_layout(barmode='group', title="Trades by Day of Week", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
             else:
-                st.warning("No trades executed.")
+                st.warning("No trades found.")
     except Exception as e:
         st.error(f"Execution Error: {e}")
