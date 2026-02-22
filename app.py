@@ -18,7 +18,6 @@ class Trade:
     exit_price: float = None
     exit_reason: str = None
     pnl_pct: float = 0.0
-    pnl_value: float = 0.0
 
 # --- 2. BACKTEST ENGINE ---
 def run_backtest(df, symbol, config):
@@ -26,31 +25,32 @@ def run_backtest(df, symbol, config):
     active_trade = None
     slippage = config['slippage'] / 100
     
-    # Simple Strategy: EMA Crossover
-    df['ema_fast'] = df['close'].ewm(span=config['ema_fast']).mean()
-    df['ema_slow'] = df['close'].ewm(span=config['ema_slow']).mean()
-    df['signal'] = np.where(df['ema_fast'] > df['ema_slow'], 1, 0)
+    # --- PK EMA RIBBON LOGIC ---
+    df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
+    df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+    
+    # Entry Signal: 20 crosses above 50
+    # Exit Signal: 20 crosses below 30
+    df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
+    df['exit_signal'] = (df['ema20'] < df['ema30']) & (df['ema20'].shift(1) >= df['ema30'].shift(1))
 
     for i in range(1, len(df)):
         current = df.iloc[i]
         prev = df.iloc[i-1]
 
-        # EXIT LOGIC (Check today's movement for trades opened previously)
+        # --- EXIT LOGIC ---
         if active_trade:
-            active_trade.pnl_value = (current['close'] - active_trade.entry_price) * (config['capital'] / active_trade.entry_price)
-            
-            price_low = current['low']
-            price_high = current['high']
-            
+            # Check for Price-based exits (SL/TP) or Indicator-based exit
             sl_price = active_trade.entry_price * (1 - config['sl'] / 100)
             tp_price = active_trade.entry_price * (1 + config['tp'] / 100)
             
-            sl_hit = price_low <= sl_price
-            tp_hit = price_high >= tp_price
-            signal_exit = prev['signal'] == 0
+            sl_hit = current['low'] <= sl_price
+            tp_hit = current['high'] >= tp_price
+            indicator_exit = prev['exit_signal'] # EMA 20 cross below 30
 
-            if sl_hit or tp_hit or signal_exit:
-                reason = "Stop Loss" if sl_hit else ("Target" if tp_hit else "Signal")
+            if sl_hit or tp_hit or indicator_exit:
+                reason = "Stop Loss" if sl_hit else ("Target" if tp_hit else "EMA Cross Exit")
                 active_trade.exit_price = current['open'] * (1 - slippage)
                 active_trade.exit_date = current.name
                 active_trade.exit_reason = reason
@@ -58,8 +58,8 @@ def run_backtest(df, symbol, config):
                 trades.append(active_trade)
                 active_trade = None
 
-        # ENTRY LOGIC (If signal yesterday, enter on today's open)
-        elif prev['signal'] == 1:
+        # --- ENTRY LOGIC ---
+        elif prev['long_signal']:
             entry_p = current['open'] * (1 + slippage)
             active_trade = Trade(
                 symbol=symbol,
@@ -71,82 +71,63 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Pro Backtester v2.0")
+st.set_page_config(layout="wide", page_title="PK EMA Ribbon Strategy")
 
-st.sidebar.title("🛠 Engine Settings")
-symbol = st.sidebar.text_input("Symbol (e.g. RELIANCE.NS, TSLA)", value="RELIANCE.NS")
+st.sidebar.title("🎗️ PK EMA Ribbon")
+symbol = st.sidebar.text_input("Symbol (Yahoo Finance)", value="RELIANCE.NS")
 capital = st.sidebar.number_input("Initial Capital", value=100000)
 st.sidebar.divider()
-sl_pct = st.sidebar.slider("Stop Loss %", 0.5, 10.0, 2.0)
-tp_pct = st.sidebar.slider("Target Profit %", 1.0, 20.0, 5.0)
+st.sidebar.info("Entry: EMA 20 ⬆️ EMA 50\n\nExit: EMA 20 ⬇️ EMA 30")
+sl_pct = st.sidebar.slider("Safety Stop Loss %", 0.5, 15.0, 5.0)
+tp_pct = st.sidebar.slider("Safety Target %", 1.0, 50.0, 15.0)
 slippage_pct = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1)
-st.sidebar.divider()
-ema_f = st.sidebar.number_input("Fast EMA", value=9)
-ema_s = st.sidebar.number_input("Slow EMA", value=21)
 
-if st.sidebar.button("🚀 Run Backtest"):
+if st.sidebar.button("🚀 Run Strategy"):
     try:
-        with st.spinner('Syncing with Market Data...'):
-            # FIXED DATA FETCHING
-            raw_data = yf.download(symbol, period="2y", interval="1d")
+        data = yf.download(symbol, period="3y", interval="1d")
+        if data.empty:
+            st.error("Invalid Symbol")
+        else:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(col).lower() for col in data.columns]
+            data = data.dropna()
             
-            if raw_data.empty:
-                st.error("No data found. Please check the symbol.")
+            config = {'sl': sl_pct, 'tp': tp_pct, 'slippage': slippage_pct, 'capital': capital}
+            trades, processed_df = run_backtest(data, symbol, config)
+
+            if not trades:
+                st.warning("No trades found for this period.")
             else:
-                data = raw_data.copy()
-                # Fix for yfinance MultiIndex columns
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
+                df_trades = pd.DataFrame([vars(t) for t in trades])
                 
-                data.columns = [str(col).lower() for col in data.columns]
-                data = data.dropna()
+                # Metrics
+                win_rate = (len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100
+                total_ret = (df_trades['pnl_pct'] + 1).prod() - 1
                 
-                config = {
-                    'sl': sl_pct, 'tp': tp_pct, 'slippage': slippage_pct, 
-                    'ema_fast': ema_f, 'ema_slow': ema_s, 'capital': capital
-                }
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Return", f"{total_ret*100:.1f}%")
+                c2.metric("Win Rate", f"{win_rate:.1f}%")
+                c3.metric("Trade Count", len(df_trades))
+
+                # Charting
+                fig = make_subplots(rows=1, cols=1)
+                fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], 
+                                             low=processed_df['low'], close=processed_df['close'], name="Price"))
                 
-                trades, processed_df = run_backtest(data, symbol, config)
+                # Plot the Ribbon EMAs
+                fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20 (Signal)", line=dict(color='yellow', width=2)))
+                fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema30'], name="EMA 30 (Exit)", line=dict(color='orange', width=1)))
+                fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema50'], name="EMA 50 (Baseline)", line=dict(color='red', width=2)))
 
-                if not trades:
-                    st.warning("Strategy generated 0 trades. Try widening your SL/Target.")
-                else:
-                    # --- DASHBOARD ---
-                    df_trades = pd.DataFrame([vars(t) for t in trades])
-                    win_rate = (len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100
-                    total_ret = df_trades['pnl_pct'].sum() * 100
-                    
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Total Trades", len(df_trades))
-                    c2.metric("Win Rate", f"{win_rate:.1f}%")
-                    c3.metric("Total Return", f"{total_ret:.1f}%")
-                    c4.metric("Avg Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
+                # Entry Markers
+                fig.add_trace(go.Scatter(x=df_trades['entry_date'], y=df_trades['entry_price'], mode='markers', 
+                                         marker=dict(symbol='triangle-up', size=12, color='lime'), name='Entry'))
 
-                    # --- PLOTTING ---
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                    
-                    fig.add_trace(go.Candlestick(x=processed_df.index, 
-                                                 open=processed_df['open'], high=processed_df['high'], 
-                                                 low=processed_df['low'], close=processed_df['close'], 
-                                                 name="Price"), row=1, col=1)
-                    
-                    # Entry Markers
-                    fig.add_trace(go.Scatter(x=df_trades['entry_date'], y=df_trades['entry_price'],
-                                             mode='markers', marker=dict(symbol='triangle-up', size=10, color='lime'),
-                                             name='Buy Signal'), row=1, col=1)
+                fig.update_layout(height=600, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
 
-                    # Equity Curve
-                    df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                    fig.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], 
-                                             name="Equity Curve", line=dict(color='cyan', width=2)), row=2, col=1)
-                    
-                    fig.update_layout(height=700, template="plotly_dark", showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # --- LOGS ---
-                    st.subheader("📊 Trade History")
-                    st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'exit_reason', 'pnl_pct']], 
-                                 use_container_width=True)
+                st.subheader("📝 Trade Log")
+                st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'exit_reason', 'pnl_pct']])
     except Exception as e:
-        st.error(f"An error occurred: {e}")
+        st.error(f"Error: {e}")
