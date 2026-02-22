@@ -30,7 +30,6 @@ def run_backtest(df, symbol, config):
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     
-    # RSI for filtering
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
@@ -70,6 +69,8 @@ symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
 tf_limits = {"1 Day": "1d", "1 Hour": "1h", "15 Minutes": "15m", "5 Minutes": "5m"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_limits.keys()))
 capital = st.sidebar.number_input("Initial Capital", value=1000.0)
+
+# Stable Date Input (Text)
 start_str = st.sidebar.text_input("Start Date", value="2005-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
@@ -83,10 +84,10 @@ if use_rsi_filter:
     if rsi_mode == "Between Range": rsi_val2 = st.sidebar.number_input("RSI 2", 0.0, 100.0, 70.0)
 
 use_sl = st.sidebar.checkbox("Stop Loss", True); sl_val = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0
-use_tp = st.sidebar.checkbox("Target Profit", True); tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0
+use_tp = st.sidebar.checkbox("Stop Target", True); tp_val = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1)
 
-if st.sidebar.button("🚀 Generate Report"):
+if st.sidebar.button("🚀 Generate Full Report"):
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_limits[selected_tf], auto_adjust=True)
         if not data.empty:
@@ -101,7 +102,7 @@ if st.sidebar.button("🚀 Generate Report"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Math for Reports
+                # Metrics Calculation
                 wins = df_trades[df_trades['pnl_pct'] > 0]
                 losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
@@ -111,59 +112,83 @@ if st.sidebar.button("🚀 Generate Report"):
                 drawdown = (df_trades['equity'] - peak) / peak
                 mdd = drawdown.min() * 100
                 
-                # --- TAB SYSTEM ---
+                # --- TABS ---
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 
                 with t1:
+                    # ROW 1
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("Total Returns (%)", f"{total_ret:.2f}%", delta_color="normal")
-                    c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%", delta_color="inverse")
+                    c1.metric("Total Returns (%)", f"{total_ret:.2f}%")
+                    c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%")
                     c3.metric("Total no. of Trades", len(df_trades))
                     
+                    # ROW 2
                     c4, c5, c6 = st.columns(3)
                     c4.metric("Initial Capital", f"{capital:,.2f}")
                     c5.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}")
                     c6.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%")
                     
+                    # ROW 3
                     c7, c8, c9 = st.columns(3)
                     c7.metric("CAGR", f"{cagr:.2f}%")
                     c8.metric("Average Return Per Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
                     c9.metric("Risk-Reward Ratio", f"{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A")
 
-                with t2:
+                    # Performance Characteristics (Moved here per request)
+                    st.divider()
                     st.subheader("Performance Characteristics")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.write("**Return Metrics**")
-                        st.write(f"Highest Return: {df_trades['pnl_pct'].max()*100:.2f}%")
-                        st.write(f"Lowest Return: {df_trades['pnl_pct'].min()*100:.2f}%")
-                        st.write(f"Avg Return (Winner): {wins['pnl_pct'].mean()*100:.2f}%")
-                        st.write(f"Avg Return (Loser): {losses['pnl_pct'].mean()*100:.2f}%")
-                    with col_b:
-                        st.write("**Risk-Adjusted Metrics**")
-                        sharpe = (df_trades['pnl_pct'].mean() / df_trades['pnl_pct'].std()) * np.sqrt(252) if len(df_trades) > 1 else 0
-                        st.write(f"Sharpe Ratio: {sharpe:.2f}")
-                        st.write(f"Calmar Ratio: {abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
-                        st.write(f"Average Drawdown: {drawdown.mean()*100:.2f}%")
+                    pc1, pc2, pc3 = st.columns(3)
+                    pc1.write(f"**Highest Return:** {df_trades['pnl_pct'].max()*100:.2f}%")
+                    pc1.write(f"**Lowest Return:** {df_trades['pnl_pct'].min()*100:.2f}%")
+                    
+                    pc2.write(f"**Avg Win:** {wins['pnl_pct'].mean()*100:.2f}%")
+                    pc2.write(f"**Avg Loss:** {losses['pnl_pct'].mean()*100:.2f}%")
+                    
+                    sharpe = (df_trades['pnl_pct'].mean() / df_trades['pnl_pct'].std()) * np.sqrt(252) if len(df_trades) > 1 else 0
+                    pc3.write(f"**Sharpe Ratio:** {sharpe:.2f}")
+                    pc3.write(f"**Calmar Ratio:** {abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
+
+                    # Monthly Return Heatmap (Added at the bottom of Quick Stats)
+                    st.divider()
+                    st.subheader("Monthly Returns (%)")
+                    df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
+                    df_trades['year'] = df_trades['exit_date'].dt.year
+                    
+                    heatmap_df = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
+                    months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    heatmap_df = heatmap_df.reindex(columns=[m for m in months_order if m in heatmap_df.columns])
+                    
+                    # Displaying as a styled Plotly heatmap for that "Institutional" look
+                    fig_heat = px.imshow(heatmap_df, text_auto=".2f", color_continuous_scale='RdYlGn', labels=dict(color="P&L %"))
+                    st.plotly_chart(fig_heat, use_container_width=True)
+
+                with t2:
+                    st.subheader("Temporal Distribution")
+                    st.write(f"**Start Date:** {start_str}")
+                    st.write(f"**End Date:** {end_str}")
+                    st.write(f"**Duration:** {years:.2f} Years")
+                    st.divider()
+                    st.subheader("Winning vs Losing Streaks")
+                    pnl_bool = (df_trades['pnl_pct'] > 0).astype(int)
+                    streak = pnl_bool.groupby((pnl_bool != pnl_bool.shift()).cumsum()).cumcount() + 1
+                    st.write(f"Max Win Streak: {streak[pnl_bool == 1].max()}")
+                    st.write(f"Max Loss Streak: {streak[pnl_bool == 0].max()}")
 
                 with t3:
-                    st.subheader("Equity & Drawdown Visuals")
-                    fig_eq = px.line(df_trades, x='exit_date', y='equity', title="Equity Curve (Long)")
+                    st.subheader("Equity Curve (Strategy)")
+                    fig_eq = px.line(df_trades, x='exit_date', y='equity', color_discrete_sequence=['#2ecc71'])
                     st.plotly_chart(fig_eq, use_container_width=True)
                     
-                    fig_dd = px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown (%)", color_discrete_sequence=['red'])
+                    st.subheader("Underwater Drawdown (%)")
+                    fig_dd = px.area(df_trades, x='exit_date', y=drawdown*100, color_discrete_sequence=['#e74c3c'])
                     st.plotly_chart(fig_dd, use_container_width=True)
                     
-                    st.subheader("Trades by Day of the Week")
-                    df_trades['day'] = df_trades['exit_date'].dt.day_name()
-                    day_stats = df_trades.groupby(['day', pnl_bool := df_trades['pnl_pct'] > 0]).size().unstack(fill_value=0)
-                    st.bar_chart(day_stats)
 
                 with t4:
                     st.subheader("Trade Audit Log")
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
-                    st.download_button("Export to CSV", df_trades.to_csv().encode('utf-8'), "report.csv", "text/csv")
+
             else:
-                st.warning("No trades found.")
+                st.warning("No trades found for this period.")
     except Exception as e:
         st.error(f"Error: {e}")
