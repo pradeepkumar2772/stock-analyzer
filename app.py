@@ -35,11 +35,14 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # Pre-calculate RS-AV for all
+    # Initialize columns to prevent KeyError
+    df['long_signal'] = False
+    df['exit_signal'] = False
+    
     if config.get('use_rsav', False) and benchmark_df is not None:
         df['rsav'] = calculate_rsav(df, benchmark_df, lookback=50)
 
-    # All Indicators from Stable Version
+    # Indicator Calculations
     df['ema_15_pk'] = df['close'].ewm(span=15, adjust=False).mean()
     df['ema_20_pk'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema_fast'] = df['close'].ewm(span=config.get('ema_fast', 20), adjust=False).mean()
@@ -119,7 +122,7 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     for i in range(1, len(df)):
         current = df.iloc[i]; prev = df.iloc[i-1]
         market_ok = True
-        if config.get('use_rsav', False):
+        if config.get('use_rsav', False) and 'rsav' in df.columns:
             market_ok = current['rsav'] >= config.get('rsav_trigger', -0.5)
             
         if active_trade:
@@ -138,7 +141,7 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
 
 # --- 3. UI STYLING (Identical) ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
-st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; } .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
+st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
 
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
@@ -184,7 +187,7 @@ if run_single:
                 common_idx = data.index.intersection(bench_data.index)
                 data, bench_data = data.loc[common_idx], bench_data.loc[common_idx]
 
-            trades, processed_df = run_backtest(data, symbol, config, strat_choice, bench_data)
+            trades, processed_df = run_backtest(data.copy(), symbol, config, strat_choice, bench_data)
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
                 df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date']); df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
@@ -211,7 +214,6 @@ if run_single:
                     r2c1.metric("Initial Capital", f"{capital:,.2f}"); r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); r2c3.metric("CAGR", f"{cagr:.2f}%"); r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
                     r3c1, r3c2, r3c3, r3c4 = st.columns(4)
                     r3c1.metric("Risk-Reward Ratio", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe Ratio", f"{sharpe:.2f}"); r3c4.metric("Calmar Ratio", f"{calmar:.2f}")
-                    # Monthly returns logic here...
                 with t2:
                     cl, cr = st.columns([1, 2.5])
                     with cl:
@@ -243,23 +245,76 @@ elif run_arena:
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             
+            # RS-AV Setup for Arena
+            bench_data = None
+            if use_rsav:
+                bench_data = yf.download("^NSEI", start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
+                if not bench_data.empty:
+                    if isinstance(bench_data.columns, pd.MultiIndex): bench_data.columns = bench_data.columns.get_level_values(0)
+                    bench_data.columns = [str(col).lower() for col in bench_data.columns]
+                    common_idx = data.index.intersection(bench_data.index)
+                    data = data.loc[common_idx]
+                    bench_data = bench_data.loc[common_idx]
+
             arena_results = []
             combined_fig = go.Figure()
+            progress_bar = st.progress(0)
             
-            for s_name in strategies_list:
-                trades, _ = run_backtest(data.copy(), symbol, config, s_name)
+            for idx, s_name in enumerate(strategies_list):
+                trades, _ = run_backtest(data.copy(), symbol, config, s_name, benchmark_df=bench_data)
+                
+                total_ret = 0.0; mdd_val = 0.0; pf = 0.0; rf = 0.0; win_r = 0.0; trade_count = len(trades)
+                
                 if trades:
                     df_res = pd.DataFrame([vars(t) for t in trades])
                     df_res['equity'] = capital * (1 + df_res['pnl_pct']).cumprod()
                     total_ret = (df_res['equity'].iloc[-1] / capital - 1) * 100
-                    mdd = ((df_res['equity'] - df_res['equity'].cummax()) / df_res['equity'].cummax()).min() * 100
+                    mdd_val = ((df_res['equity'] - df_res['equity'].cummax()) / df_res['equity'].cummax()).min() * 100
                     win_r = (len(df_res[df_res['pnl_pct'] > 0]) / len(df_res)) * 100
                     
-                    arena_results.append({"Strategy": s_name, "Total Return %": round(total_ret, 2), "Max DD %": round(mdd, 2), "Win %": round(win_r, 2), "Trades": len(df_res)})
+                    # Profit Factor
+                    p_sum = df_res[df_res['pnl_pct'] > 0]['pnl_pct'].sum()
+                    l_sum = abs(df_res[df_res['pnl_pct'] <= 0]['pnl_pct'].sum())
+                    pf = p_sum / l_sum if l_sum != 0 else p_sum
+                    
+                    # Recovery Factor
+                    rf = total_ret / abs(mdd_val) if mdd_val != 0 else total_ret
+                    
                     combined_fig.add_trace(go.Scatter(x=df_res['exit_date'], y=df_res['equity'], name=s_name))
+                
+                arena_results.append({
+                    "Strategy": s_name, 
+                    "Total Return %": round(total_ret, 2), 
+                    "Max DD %": round(mdd_val, 2), 
+                    "Profit Factor": round(pf, 2),
+                    "Recovery Factor": round(rf, 2),
+                    "Win %": round(win_r, 2), 
+                    "Trades": trade_count
+                })
+                progress_bar.progress((idx + 1) / len(strategies_list))
             
             st.subheader("🏟️ Strategy Arena Leaderboard")
             res_df = pd.DataFrame(arena_results).sort_values(by="Total Return %", ascending=False)
-            st.table(res_df)
-            st.plotly_chart(combined_fig.update_layout(title="Multi-Strategy Equity Comparison", template="plotly_dark"), use_container_width=True)
+            
+            # --- Visual Color Coding ---
+            def color_leaderboard(val, column):
+                if column == "Max DD %":
+                    return "color: #ff4b4b;" if val < -15 else "" # Red for high risk
+                if column in ["Total Return %", "Recovery Factor", "Profit Factor"]:
+                    if column == "Profit Factor": return "color: #00ff00; font-weight: bold;" if val > 2.0 else ""
+                    return "color: #00ff00;" if val > 50 else "" # Green for winners
+                return ""
+
+            st.dataframe(
+                res_df.style.apply(lambda x: [color_leaderboard(v, x.name) for v in x]),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total Return %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Max DD %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Recovery Factor": st.column_config.ProgressColumn(min_value=0, max_value=float(res_df['Recovery Factor'].max() if not res_df.empty else 1))
+                }
+            )
+            
+            st.plotly_chart(combined_fig.update_layout(title="Arena Equity Comparison", template="plotly_dark"), use_container_width=True)
     except Exception as e: st.error(f"Arena Error: {e}")
