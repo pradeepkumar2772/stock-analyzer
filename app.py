@@ -25,10 +25,12 @@ def run_backtest(df, symbol, config):
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
+    # EMA Logic
     df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
     df['ema30'] = df['close'].ewm(span=30, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     
+    # Signal Logic
     df['long_signal'] = (df['ema20'] > df['ema50']) & (df['ema20'].shift(1) <= df['ema50'].shift(1))
     df['exit_signal'] = (df['ema20'] < df['ema30']) & (df['ema20'].shift(1) >= df['ema30'].shift(1))
 
@@ -59,30 +61,14 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Nifty 500 Pro Backtester")
+st.set_page_config(layout="wide", page_title="PK Ribbon Backtester")
 
 st.sidebar.title("🎗️ PK Ribbon Engine")
 
-# --- METHOD 1: SMART SYMBOL SEARCH ---
-nifty_top = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", 
-    "SBI.NS", "LICI.NS", "ITC.NS", "HUL.NS", "ADANIENT.NS", "TATAMOTORS.NS", "AXISBANK.NS",
-    "NIFTY 50 (^NSEI)", "BANK NIFTY (^NSEBANK)", "SENSEX (^BSESN)", "S&P 500 (^GSPC)"
-]
+# --- REVERTED SYMBOL INPUT ---
+symbol = st.sidebar.text_input("Enter Symbol (e.g. RELIANCE.NS, ^NSEI, AAPL)", value="RELIANCE.NS").upper()
 
-st.sidebar.subheader("🔍 Search Symbol")
-selected_search = st.sidebar.selectbox(
-    "Select from Top Stocks or type 'CUSTOM'",
-    options=["CUSTOM / NIFTY 500 Search..."] + nifty_top,
-    index=1
-)
-
-if selected_search == "CUSTOM / NIFTY 500 Search...":
-    symbol = st.sidebar.text_input("Type Ticker (e.g. ZOMATO.NS, TITAN.NS)", value="RELIANCE.NS").upper()
-else:
-    symbol = selected_search.split(" ")[-1].strip("()") if "(" in selected_search else selected_search
-
-# --- TIMEFRAME GUARD ---
+# TIMEFRAME OPTIONS
 tf_limits = {
     "1 Minute": {"val": "1m", "max_days": 7},
     "5 Minutes": {"val": "5m", "max_days": 59},
@@ -108,11 +94,12 @@ use_slippage = st.sidebar.checkbox("Apply Slippage", value=True)
 slippage_val = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slippage else 0
 
 if st.sidebar.button("🚀 Run Backtest"):
-    # Auto-Correction
+    # Auto-Correction for Date Range
     earliest_allowed = date.today() - timedelta(days=max_days_allowed)
     final_start = user_start if user_start >= earliest_allowed else earliest_allowed
+    
     if user_start < earliest_allowed:
-        st.info(f"💡 Adjusted Start Date to {final_start} (Timeframe Limit)")
+        st.info(f"💡 Adjusted Start Date to {final_start} due to {selected_tf_label} data limits.")
 
     try:
         with st.spinner(f'Fetching Data for {symbol}...'):
@@ -128,13 +115,13 @@ if st.sidebar.button("🚀 Run Backtest"):
                 if trades:
                     df_trades = pd.DataFrame([vars(t) for t in trades])
                     
-                    # Dashboard Metrics
+                    # Metrics
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Total Return", f"{((df_trades['pnl_pct'] + 1).prod() - 1)*100:.1f}%")
                     m2.metric("Win Rate", f"{(len(df_trades[df_trades['pnl_pct'] > 0]) / len(df_trades)) * 100:.1f}%")
                     m3.metric("Trades", len(df_trades))
 
-                    # Full Chart
+                    # Chart
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
                     fig.add_trace(go.Candlestick(x=processed_df.index, open=processed_df['open'], high=processed_df['high'], low=processed_df['low'], close=processed_df['close'], name="Price"), row=1, col=1)
                     fig.add_trace(go.Scatter(x=processed_df.index, y=processed_df['ema20'], name="EMA 20", line=dict(color='yellow')), row=1, col=1)
@@ -145,11 +132,11 @@ if st.sidebar.button("🚀 Run Backtest"):
                     fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # TRADE LOG
+                    # Trade Log
                     st.subheader("📜 Trade History")
                     st.dataframe(df_trades, use_container_width=True)
 
-                    # --- EXPORT TO CSV SECTION ---
+                    # Export to CSV
                     st.divider()
                     csv = df_trades.to_csv(index=False).encode('utf-8')
                     st.download_button(
@@ -159,8 +146,8 @@ if st.sidebar.button("🚀 Run Backtest"):
                         mime='text/csv',
                     )
                 else:
-                    st.warning("No trades found.")
+                    st.warning("No trades generated.")
             else:
-                st.error("No data found.")
+                st.error("No data found. Check ticker spelling.")
     except Exception as e:
         st.error(f"Error: {e}")
