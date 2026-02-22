@@ -19,7 +19,7 @@ class Trade:
     exit_reason: str = None
     pnl_pct: float = 0.0
 
-# --- 2. MULTI-STRATEGY ENGINE ---
+# --- 2. MULTI-STRATEGY ENGINE (All 12 Consolidated) ---
 def run_backtest(df, symbol, config, strategy_type):
     trades = []
     active_trade = None
@@ -36,63 +36,82 @@ def run_backtest(df, symbol, config, strategy_type):
     df['ema_exit'] = df['close'].ewm(span=config.get('ema_exit', 30), adjust=False).mean()
     df['sma_200'] = df['close'].rolling(window=200).mean()
 
+    # Bollinger Bands
     df['sma_20'] = df['close'].rolling(window=20).mean()
     df['std_20'] = df['close'].rolling(window=20).std()
     df['upper_bb'] = df['sma_20'] + (df['std_20'] * 2)
     df['lower_bb'] = df['sma_20'] - (df['std_20'] * 2)
     df['bb_width'] = df['upper_bb'] - df['lower_bb']
     
+    # ATR
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['atr'] = tr.rolling(window=14).mean()
     
+    # HHV / LLV / Neckline
     h_per = config.get('hhv_period', 20)
     df['hhv'] = df['high'].rolling(window=h_per).max()
     df['llv'] = df['low'].rolling(window=h_per).min()
     df['neckline'] = df['high'].rolling(window=20).max()
     
-    # --- Strategy Mapping ---
+    # --- Strategy Signals ---
     if strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
+
     elif strategy_type == "EMA Ribbon":
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['ema_fast'].shift(1) <= df['ema_slow'].shift(1))
         df['exit_signal'] = (df['ema_fast'] < df['ema_exit']) & (df['ema_fast'].shift(1) >= df['ema_exit'].shift(1))
+
     elif strategy_type == "Bollinger Squeeze Breakout":
         is_sqz = df['bb_width'] <= df['bb_width'].rolling(window=20).min()
         df['long_signal'] = is_sqz.shift(1) & (df['close'] > df['upper_bb'])
         df['exit_signal'] = (df['close'] < df['sma_20'])
+
     elif strategy_type == "EMA & RSI Synergy":
         df['long_signal'] = (df['ema_fast'] > df['ema_slow']) & (df['rsi'] > 60)
         df['exit_signal'] = (df['close'] < df['ema_exit']) | (df['rsi'] < 40)
+
     elif strategy_type == "RSI Divergence":
         price_ll = df['low'] < df['low'].shift(10)
         rsi_hl = df['rsi'] > df['rsi'].shift(10)
         df['long_signal'] = price_ll & rsi_hl & (df['close'] > df['high'].shift(1))
         df['exit_signal'] = (df['high'] > df['high'].shift(10)) & (df['rsi'] < df['rsi'].shift(10))
+
     elif strategy_type == "BB & RSI Exhaustion":
         df['long_signal'] = (df['low'] <= df['lower_bb']) & (df['rsi'] < 30)
         df['exit_signal'] = (df['close'] >= df['sma_20']) | (df['rsi'] > 50)
+
     elif strategy_type == "Breakaway Gap Momentum":
         df['long_signal'] = (df['open'] > df['high'].shift(1)) & (df['close'].shift(1) >= df['hhv'].shift(2) * 0.98)
         df['exit_signal'] = (df['close'] < df['low'].shift(1))
+
     elif strategy_type == "ATR Band Breakout":
-        u_atr = df['sma_20'] + df['atr']; l_atr = df['sma_20'] - df['atr']
+        u_atr = df['sma_20'] + df['atr']
+        l_atr = df['sma_20'] - df['atr']
         df['long_signal'] = (df['close'] > u_atr) & (df['close'].shift(1) <= u_atr.shift(1))
         df['exit_signal'] = (df['close'] < l_atr) & (df['close'].shift(1) >= l_atr.shift(1))
+        
     elif strategy_type == "HHV/LLV Breakout":
-        df['long_signal'] = (df['close'] > df['hhv'].shift(1)); df['exit_signal'] = (df['close'] < df['llv'].shift(1))
+        df['long_signal'] = (df['close'] > df['hhv'].shift(1))
+        df['exit_signal'] = (df['close'] < df['llv'].shift(1))
+
     elif strategy_type == "Double Bottom Breakout":
-        df['long_signal'] = (df['close'] > df['neckline'].shift(1)); df['exit_signal'] = (df['close'] < df['ema_exit'])
+        df['long_signal'] = (df['close'] > df['neckline'].shift(1))
+        df['exit_signal'] = (df['close'] < df['ema_exit'])
+
     elif strategy_type == "Fibonacci 61.8% Retracement":
-        uptrend = df['close'] > df['sma_200']; fib = df['hhv'] - ((df['hhv'] - df['llv']) * 0.618)
+        uptrend = df['close'] > df['sma_200']
+        fib = df['hhv'] - ((df['hhv'] - df['llv']) * 0.618)
         df['long_signal'] = uptrend & (df['low'] <= fib) & (df['close'] > df['high'].shift(1))
         df['exit_signal'] = df['close'] < df['llv'].shift(1)
+
     elif strategy_type == "Relative Strength Play":
         stock_ret = df['close'].pct_change(periods=55)
-        df['long_signal'] = (stock_ret > 0) & (df['close'] > df['ema_fast']); df['exit_signal'] = (df['close'] < df['ema_slow'])
+        df['long_signal'] = (stock_ret > 0) & (df['close'] > df['ema_fast'])
+        df['exit_signal'] = (df['close'] < df['ema_slow'])
 
     # --- Backtest Loop ---
     for i in range(1, len(df)):
@@ -113,7 +132,19 @@ def run_backtest(df, symbol, config, strategy_type):
 
 # --- 3. UI STYLING ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
-st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; } .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; } .total-cell { font-weight: bold; color: #fff; background-color: #1e3a5f !important; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    .stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; }
+    .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; }
+    .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; }
+    .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; }
+    .total-cell { font-weight: bold; color: #fff; background-color: #1e3a5f !important; }
+    .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; }
+    .stat-label { color: #999; font-size: 0.85rem; }
+    .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }
+    </style>
+""", unsafe_allow_html=True)
 
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
@@ -138,7 +169,6 @@ use_slip = st.sidebar.toggle("Slippage", True); config['slippage_val'] = st.side
 if st.sidebar.button("🚀 Run Backtest"):
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
-        benchmark = yf.download("^NSEI", start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
         if not data.empty:
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
@@ -149,13 +179,12 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date'])
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
                 
-                # Benchmark Processing
-                if isinstance(benchmark.columns, pd.MultiIndex): benchmark.columns = benchmark.columns.get_level_values(0)
-                benchmark['nifty_ret'] = benchmark['Close'].pct_change().fillna(0)
-                benchmark['nifty_equity'] = capital * (1 + benchmark['nifty_ret']).cumprod()
-
+                # Setup dates for monthly table & charts
+                df_trades['year'] = df_trades['exit_date'].dt.year
+                df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
+                
+                # Calculations
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
@@ -164,11 +193,13 @@ if st.sidebar.button("🚀 Run Backtest"):
                 peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
                 sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
                 rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
-                exp = (total_ret/len(df_trades)); calmar = abs(cagr/mdd) if mdd != 0 else 0.0
+                exp = (total_ret/len(df_trades))
+                calmar = abs(cagr/mdd) if mdd != 0 else 0.0
                 pnl_b = (df_trades['pnl_pct'] > 0).astype(int); strk = pnl_b.groupby((pnl_b != pnl_b.shift()).cumsum()).cumcount() + 1
                 max_w_s = strk[pnl_b == 1].max() if not wins.empty else 0; max_l_s = strk[pnl_b == 0].max() if not losses.empty else 0
 
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
+                
                 with t1:
                     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
                     r1c1.metric("Total Returns (%)", f"{total_ret:.2f}%"); r1c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%"); r1c3.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%"); r1c4.metric("Total Trades", len(df_trades))
@@ -176,7 +207,8 @@ if st.sidebar.button("🚀 Run Backtest"):
                     r2c1.metric("Initial Capital", f"{capital:,.2f}"); r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); r2c3.metric("CAGR", f"{cagr:.2f}%"); r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
                     r3c1, r3c2, r3c3, r3c4 = st.columns(4)
                     r3c1.metric("Risk-Reward Ratio", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe Ratio", f"{sharpe:.2f}"); r3c4.metric("Calmar Ratio", f"{calmar:.2f}")
-                    st.divider(); st.subheader("Monthly Returns")
+                    st.divider()
+                    st.subheader("Monthly Returns")
                     piv = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
                     piv = piv.reindex(columns=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']).fillna(0)
                     piv['Total'] = piv.sum(axis=1)
@@ -194,17 +226,19 @@ if st.sidebar.button("🚀 Run Backtest"):
                     with cl:
                         with st.expander("📊 Performance", expanded=True):
                             draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Sharpe Ratio", f"{sharpe:.2f}"); draw_stat("Calmar Ratio", f"{calmar:.2f}")
+                        with st.expander("📈 Returns"):
+                            draw_stat("Total Ret", f"{total_ret:.2f}%"); draw_stat("Avg Ret/Trade", f"{df_trades['pnl_pct'].mean()*100:.2f}%")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Max DD", f"{mdd:.2f}%"); draw_stat("Avg DD", f"{drawdown.mean()*100:.2f}%")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f}%"); draw_stat("Risk-Reward", f"{rr:.2f}")
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
                             draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                         with st.expander("🔥 Streak"):
                             draw_stat("Win Streak", max_w_s); draw_stat("Loss Streak", max_l_s)
                     with cr:
-                        fig_eq = go.Figure(); fig_eq.add_trace(go.Scatter(x=df_trades['exit_date'], y=df_trades['equity'], name="Strategy Equity", line=dict(color='#3498db')))
-                        fig_eq.add_trace(go.Scatter(x=benchmark.index, y=benchmark['nifty_equity'], name="Nifty 50 Benchmark", line=dict(color='#95a5a6', dash='dash')))
-                        st.plotly_chart(fig_eq.update_layout(title="Strategy vs Nifty 50 Benchmark", template="plotly_dark"), use_container_width=True)
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve"), use_container_width=True)
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
@@ -212,6 +246,11 @@ if st.sidebar.button("🚀 Run Backtest"):
                     st.plotly_chart(go.Figure(data=[go.Bar(x=y_r.index, y=y_r.values, text=y_r.values.round(1), texttemplate='%{text}%', textposition='outside', marker=dict(color='#3498db'))]).update_layout(title="Yearly Return (%)", template="plotly_dark"), use_container_width=True)
                     ex_st = df_trades['exit_reason'].value_counts(normalize=True) * 100
                     st.plotly_chart(go.Figure(data=[go.Bar(x=ex_st.index, y=ex_st.values, text=ex_st.values.astype(int), texttemplate='%{text}%', textposition='outside', marker=dict(color='#2ecc71'))]).update_layout(title="Exits Distribution (%)", template="plotly_dark"), use_container_width=True)
+                    df_trades['day'] = df_trades['exit_date'].dt.day_name(); day_d = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
+                    day_d.columns = ['Losers', 'Winners']; day_d = day_d.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
+                    f4 = go.Figure()
+                    for c, color in zip(['Winners', 'Losers'], ['#2ecc71', '#e74c3c']): f4.add_trace(go.Bar(x=day_d.index, y=day_d[c], name=c, marker=dict(color=color), text=day_d[c], textposition='outside'))
+                    st.plotly_chart(f4.update_layout(barmode='group', title="Trades by Day of Week", template="plotly_dark"), use_container_width=True)
 
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
