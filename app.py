@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 
-# --- 1. NIFTY 200 CONSTITUENTS (Top Market Cap) ---
+# --- 1. NIFTY 200 CONSTITUENTS ---
 NIFTY_200 = sorted([
     "ABB.NS", "ACC.NS", "ADANIENSOL.NS", "ADANIENT.NS", "ADANIGREEN.NS", "ADANIPORTS.NS", "ADANIPOWER.NS", 
     "ATGL.NS", "AWL.NS", "ABCAPITAL.NS", "ABFRL.NS", "ALKEM.NS", "AMBUJACEM.NS", "APOLLOHOSP.NS", "APOLLOTYRE.NS", 
@@ -59,11 +59,9 @@ def draw_stat(label, value):
 
 # --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ Nifty 200 Engine")
-# Dynamic Dropdown for Nifty 200
 symbol = st.sidebar.selectbox("Select Scrip", NIFTY_200, index=NIFTY_200.index("BRITANNIA.NS"))
 strat_choice = st.sidebar.selectbox("Strategy", ["RSI 60 Cross", "EMA Ribbon"])
 
-# DYNAMIC DATES
 col1, col2 = st.sidebar.columns(2)
 with col1:
     start_dt = st.date_input("Start Date", value=date(2015, 1, 1))
@@ -79,11 +77,9 @@ if st.sidebar.button("🚀 Run Backtest"):
     try:
         data = yf.download(symbol, start=start_dt, end=end_dt, interval="1d")
         if not data.empty:
-            # MultiIndex Fix
             if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(c).lower() for c in data.columns]
             
-            # Indicators using Pandas-TA
             if strat_choice == "RSI 60 Cross":
                 data['rsi'] = ta.rsi(data['close'], length=14)
                 long_s = (data['rsi'] > 60) & (data['rsi'].shift(1) <= 60)
@@ -94,7 +90,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                 long_s = (data['ema_f'] > data['ema_s']) & (data['ema_f'].shift(1) <= data['ema_s'].shift(1))
                 exit_s = (data['ema_f'] < data['ema_s']) & (data['ema_f'].shift(1) >= data['ema_s'].shift(1))
 
-            # Trade Loop
             trades = []; active = None
             slip = (config['slip_val'] / 100) if config['use_slip'] else 0
             
@@ -102,7 +97,6 @@ if st.sidebar.button("🚀 Run Backtest"):
                 if active:
                     sl_hit = config['use_sl'] and data['low'].iloc[i] <= active.entry_price * (1 - config['sl_val']/100)
                     tp_hit = config['use_tp'] and data['high'].iloc[i] >= active.entry_price * (1 + config['tp_val']/100)
-                    
                     if sl_hit or tp_hit or exit_s.iloc[i-1]:
                         active.exit_price = data['open'].iloc[i] * (1 - slip)
                         active.exit_date = data.index[i]
@@ -115,38 +109,29 @@ if st.sidebar.button("🚀 Run Backtest"):
             if trades:
                 df_t = pd.DataFrame([vars(t) for t in trades])
                 df_t['equity'] = capital * (1 + df_t['pnl_pct']).cumprod()
-                
-                # Metrics
                 total_ret = (df_t['equity'].iloc[-1] / capital - 1) * 100
                 peak = df_t['equity'].cummax(); dd = (df_t['equity'] - peak) / peak; mdd = dd.min() * 100
                 wins = df_t[df_t['pnl_pct'] > 0]
                 
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Details"])
-                
                 with t1:
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Total Return", f"{total_ret:.2f}%")
                     c2.metric("Max Drawdown", f"{mdd:.2f}%")
                     c3.metric("Win Ratio", f"{(len(wins)/len(df_t)*100):.1f}%")
                     c4.metric("Total Trades", len(df_t))
-                
                 with t2:
                     col_l, col_r = st.columns([1, 2.5])
                     with col_l:
                         with st.expander("📊 Performance", expanded=True):
-                            draw_stat("Scrip", symbol)
-                            draw_stat("Return", f"{total_ret:.2f}%")
-                            draw_stat("MDD", f"{mdd:.2f}%")
+                            draw_stat("Scrip", symbol); draw_stat("Return", f"{total_ret:.2f}%"); draw_stat("MDD", f"{mdd:.2f}%")
                     with col_r:
                         st.plotly_chart(px.line(df_t, x='exit_date', y='equity', title="Equity Growth", template="plotly_dark"), use_container_width=True)
-
                 with t3:
-                    [Image of maximum drawdown chart in technical analysis]
                     st.plotly_chart(px.area(df_t, x='exit_date', y=dd*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c'], template="plotly_dark"), use_container_width=True)
-                
                 with t4:
                     st.dataframe(df_t, use_container_width=True)
             else:
-                st.warning("No trades found in the selected date range.")
+                st.warning("No trades found in the selected range.")
     except Exception as e:
         st.error(f"Error: {e}")
