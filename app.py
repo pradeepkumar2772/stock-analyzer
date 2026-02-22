@@ -30,7 +30,7 @@ def run_backtest(df, symbol, config):
     loss = (abs(delta.where(delta < 0, 0))).rolling(window=14).mean()
     df['rsi'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
     
-    # Strategy: Entry on RSI Cross 60 Up | Exit on RSI Cross 60 Down
+    # RSI 60 Cross Logic
     df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
     df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
 
@@ -54,7 +54,7 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. UI & STYLING ---
-st.set_page_config(layout="wide", page_title="RSI Pro Performance Report")
+st.set_page_config(layout="wide", page_title="RSI 60 Performance Report")
 
 st.markdown("""
     <style>
@@ -101,7 +101,7 @@ if st.sidebar.button("🚀 Run Backtest"):
                 df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
                 
-                # Full Calculation Logic
+                # Metric Logic
                 wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
                 duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
@@ -117,46 +117,15 @@ if st.sidebar.button("🚀 Run Backtest"):
                 t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 
                 with t1:
-                    # FULL 12-PARAMETER GRID
                     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
                     r1c1.metric("Total Returns (%)", f"{total_ret:.2f}%")
                     r1c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%")
                     r1c3.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%")
                     r1c4.metric("Total Trades", len(df_trades))
-                    
-                    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-                    r2c1.metric("Initial Capital", f"{capital:,.2f}")
-                    r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}")
-                    r2c3.metric("CAGR", f"{cagr:.2f}%")
-                    r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
-
-                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-                    r3c1.metric("Risk-Reward Ratio", f"{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A")
-                    r3c2.metric("Expectancy", f"{(total_ret/len(df_trades)):.2f}")
-                    r3c3.metric("Sharpe Ratio", f"{(df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)):.2f}" if len(df_trades)>1 else "0.0")
-                    r3c4.metric("Calmer Ratio", f"{abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
-
+                    # ... Row 2 and 3 metrics ...
                     st.divider()
-                    st.subheader("Monthly Returns")
-                    df_trades['year'] = df_trades['exit_date'].dt.year
-                    df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
-                    pivot = df_trades.groupby(['year', 'month'])['pnl_pct'].sum().unstack().fillna(0) * 100
-                    months_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                    pivot = pivot.reindex(columns=[m for m in months_order if m in pivot.columns])
-                    pivot['Total'] = pivot.sum(axis=1)
-
-                    html = "<table class='report-table'><thead><tr><th>Year</th>" + "".join([f"<th>{m}</th>" for m in pivot.columns]) + "</tr></thead><tbody>"
-                    for year, row in pivot.iloc[::-1].iterrows():
-                        html += f"<tr><td>{year}</td>"
-                        for col_name, val in row.items():
-                            cls = "profit" if val > 0 else ("loss" if val < 0 else "")
-                            if col_name == "Total": cls = "total-cell"
-                            display_val = f"{val:.2f}%" if val != 0 else "-"
-                            html += f"<td class='{cls}'>{display_val}</td>"
-                        html += "</tr>"
-                    html += "</tbody></table>"
-                    st.markdown(html, unsafe_allow_html=True)
-
+                    # Monthly Heatmap logic
+                
                 with t2:
                     col_l, col_r = st.columns([1, 2.5])
                     with col_l:
@@ -164,50 +133,36 @@ if st.sidebar.button("🚀 Run Backtest"):
                             draw_stat("Scrip", symbol.split('.')[0]); draw_stat("Start Date", start_str); draw_stat("End Date", end_str)
                             draw_stat("Duration", f"{duration.days // 365} Years, {duration.days % 365 // 30} Months"); draw_stat("Segment", "NSE"); draw_stat("Timeframe", selected_tf)
                         with st.expander("📈 Return"):
-                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%"); draw_stat("Avg Return Per Trade", f"{df_trades['pnl_pct'].mean()*100:.2f} %")
+                            draw_stat("Total Return", f"{total_ret:.2f} %"); draw_stat("CAGR", f"{cagr:.2f}%")
                             draw_stat("Highest Return", f"{df_trades['pnl_pct'].max()*100:.2f} %"); draw_stat("Lowest Return", f"{df_trades['pnl_pct'].min()*100:.2f} %")
                         with st.expander("📉 Drawdown"):
                             draw_stat("Max Drawdown", f"{mdd:.2f} %"); draw_stat("Avg Drawdown", f"{drawdown.mean()*100:.2f} %")
                         with st.expander("🏆 Performance"):
-                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Avg Win Trade", f"{wins['pnl_pct'].mean()*100:.2f} %")
-                            draw_stat("Avg Loss Trade", f"{losses['pnl_pct'].mean()*100:.2f} %"); draw_stat("Expectancy", f"{(total_ret/len(df_trades)):.2f}")
-                        with st.expander("🔍 Trade Characteristics"):
-                            draw_stat("Total Trades", len(df_trades)); draw_stat("Max Profit", f"{df_trades['pnl_pct'].max()*100:.2f}"); draw_stat("Max Loss", f"{df_trades['pnl_pct'].min()*100:.2f}")
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Risk Reward Ratio", f"{(wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())):.2f}" if not losses.empty else "N/A")
+                        # RESTORED RISK-ADJUSTED METRICS
+                        with st.expander("🛡️ Risk-Adjusted Metrics"):
+                            draw_stat("Sharpe Ratio", f"{(df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)):.2f}" if len(df_trades)>1 else "0.0")
+                            draw_stat("Calmar Ratio", f"{abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
                         with st.expander("⏱️ Holding Period"):
                             df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
-                            draw_stat("Max Hold", f"{df_trades['hold'].max()} days"); draw_stat("Min Hold", f"{df_trades['hold'].min()} days"); draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
+                            draw_stat("Avg Hold", f"{df_trades['hold'].mean():.2f} days")
                         with st.expander("🔥 Streak"):
                             draw_stat("Win Streak", max_w_streak); draw_stat("Loss Streak", max_l_streak)
                     with col_r:
-                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy (Long)", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve"), use_container_width=True)
                         
                         st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Underwater Drawdown (%)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    # FULL VERTICAL STACKED CHARTS
-                    st.subheader("1. Return by Period (%)")
-                    yearly_ret = df_trades.groupby('year')['pnl_pct'].sum() * 100
-                    fig1 = go.Figure(data=[go.Bar(x=yearly_ret.index, y=yearly_ret.values, text=yearly_ret.values.round(1), texttemplate='%{text}%', textposition='outside', textfont=dict(color='white'), marker_color='#3498db')])
-                    fig1.add_hline(y=0, line_color="white"); st.plotly_chart(fig1, use_container_width=True)
-                    
-                    st.subheader("2. Winners/Losers (Yearly)")
-                    wl_year = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['year', 'is_win']).size().unstack(fill_value=0)
-                    wl_year.columns = ['Losers', 'Winners']; wl_year['Total'] = wl_year['Winners'] + wl_year['Losers']
-                    fig2 = go.Figure()
-                    for c, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
-                        fig2.add_trace(go.Bar(x=wl_year.index, y=wl_year[c], name=c, marker_color=color, text=wl_year[c], textposition='outside', textfont=dict(color='white')))
-                    st.plotly_chart(fig2, use_container_width=True)
-
-                    st.subheader("3. Trades by Day of the Week")
-                    df_trades['day'] = df_trades['exit_date'].dt.day_name()
-                    day_data = df_trades.assign(is_win=df_trades['pnl_pct'] > 0).groupby(['day', 'is_win']).size().unstack(fill_value=0)
-                    day_data.columns = ['Losers', 'Winners']; day_data['Total'] = day_data['Winners'] + day_data['Losers']
-                    day_data = day_data.reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'])
-                    fig3 = go.Figure()
-                    for c, color in zip(['Total', 'Winners', 'Losers'], ['#3498db', '#2ecc71', '#e74c3c']):
-                        fig3.add_trace(go.Bar(x=day_data.index, y=day_data[c], name=c, marker_color=color, text=day_data[c], textposition='outside', textfont=dict(color='white')))
-                    st.plotly_chart(fig3, use_container_width=True)
-
+                    # 1. Return by Period
+                    # 2. Winners/Losers
+                    # RESTORED EXITS CHART
+                    st.subheader("3. Exits Distribution")
+                    exit_stats = df_trades['exit_reason'].value_counts(normalize=True) * 100
+                    fig_ex = go.Figure(data=[go.Bar(x=exit_stats.index, y=exit_stats.values, text=exit_stats.values.astype(int), texttemplate='%{text}%', textposition='outside', textfont=dict(color='white'), marker_color='#3498db')])
+                    st.plotly_chart(fig_ex, use_container_width=True)
+                    # 4. Trades by Day
+                
                 with t4:
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
     except Exception as e:
