@@ -70,17 +70,14 @@ def run_backtest(df, symbol, config):
     return trades, df
 
 # --- 3. STREAMLIT UI ---
-st.set_page_config(layout="wide", page_title="Backtesting Report Pro")
+st.set_page_config(layout="wide", page_title="Institutional Backtesting Report")
 
-# UPDATED CSS: Darker backgrounds and stronger text for Monthly Returns
 st.markdown("""
     <style>
     .stMetric { background-color: #1a1c24; padding: 20px; border-radius: 8px; border: 1px solid #2d2f3b; }
     .report-table { width: 100%; border-collapse: collapse; background-color: transparent; margin-top: 10px; }
     .report-table th { background-color: #2d2f3b; color: #bbb; padding: 12px; border: 1px solid #2d2f3b; font-size: 0.85rem; text-transform: uppercase; }
     .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.9rem; }
-    
-    /* Darker, high-visibility colors */
     .profit { background-color: #1b5e20 !important; color: #c8e6c9 !important; font-weight: bold; text-shadow: 1px 1px 2px #000; }
     .loss { background-color: #b71c1c !important; color: #ffcdd2 !important; font-weight: bold; text-shadow: 1px 1px 2px #000; }
     .total-cell { font-weight: bold; color: #fff; background-color: #1e3a5f !important; }
@@ -164,19 +161,30 @@ if st.sidebar.button("🚀 Generate Full Report"):
                     st.markdown(html, unsafe_allow_html=True)
 
                 with t2:
-                    st.subheader("Performance Characteristics")
-                    pc1, pc2 = st.columns(2)
-                    pc1.write(f"**Highest Return:** {df_trades['pnl_pct'].max()*100:.2f}%")
-                    pc1.write(f"**Lowest Return:** {df_trades['pnl_pct'].min()*100:.2f}%")
-                    pc2.write(f"**Avg Win:** {wins['pnl_pct'].mean()*100:.2f}%")
-                    pc2.write(f"**Avg Loss:** {losses['pnl_pct'].mean()*100:.2f}%")
+                    st.subheader("Performance & Analytics")
+                    col_stats, col_charts = st.columns([1, 2.5])
+                    
+                    with col_stats:
+                        st.write("---")
+                        st.write(f"**Highest Return:** {df_trades['pnl_pct'].max()*100:.2f}%")
+                        st.write(f"**Lowest Return:** {df_trades['pnl_pct'].min()*100:.2f}%")
+                        st.write(f"**Avg Win:** {wins['pnl_pct'].mean()*100:.2f}%")
+                        st.write(f"**Avg Loss:** {losses['pnl_pct'].mean()*100:.2f}%")
+                        st.write(f"**Calmar Ratio:** {abs(cagr/mdd):.2f}" if mdd != 0 else "N/A")
+                        st.write(f"**Sharpe Ratio:** {(df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)):.2f}" if len(df_trades)>1 else "0.0")
+                    
+                    with col_charts:
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve Strategy (Long)", color_discrete_sequence=['#3498db']), use_container_width=True)
+                        
+                        st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown (Long)", color_discrete_sequence=['#e74c3c']), use_container_width=True)
 
                 with t3:
-                    st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve"), use_container_width=True)
-                    
-                    st.plotly_chart(px.area(df_trades, x='exit_date', y=drawdown*100, title="Drawdown %", color_discrete_sequence=['red']), use_container_width=True)
+                    st.subheader("Advanced Distribution")
+                    st.write("Distribution charts remain here for deep-dive temporal analysis.")
+                    # Placeholder for the distribution charts you shared in the screenshots
                 
                 with t4:
+                    st.subheader("Trade Audit Log")
                     st.dataframe(df_trades[['entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct', 'exit_reason']], use_container_width=True)
 
             else:
