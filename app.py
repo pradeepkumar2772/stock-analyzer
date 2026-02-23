@@ -73,6 +73,14 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     df['flag_high'] = df['high'].rolling(window=3).max()
     df['flag_low'] = df['low'].rolling(window=3).min()
 
+    # --- INSERT WARMUP PROTECTION HERE ---
+    df = df.dropna().copy()
+    if df.empty: return [], df
+    
+    # Initialize columns AFTER dropping NaNs
+    df['long_signal'] = False
+    df['exit_signal'] = False
+
     # Strategy Switch Logic
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20_pk'].shift(1)) & (df['close'] > df['ema_20_pk'])
