@@ -218,7 +218,14 @@ if run_single:
                 peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
                 sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
                 rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
-                exp = (total_ret/len(df_trades)); calmar = abs(cagr/mdd) if mdd != 0 else 0.0
+                # --- VERIFIED THARP EXPECTANCY ---
+                wr = len(wins) / len(df_trades)
+                avg_w = wins['pnl_pct'].mean() if not wins.empty else 0
+                avg_l = losses['pnl_pct'].mean() if not losses.empty else 0
+                
+                # Your formula: (Win% * AvgWin) + (Loss% * AvgLoss)
+                exp = (wr * avg_w) + ((1 - wr) * avg_l) 
+                calmar = abs(cagr/mdd) if mdd != 0 else 0.0
                 pnl_b = (df_trades['pnl_pct'] > 0).astype(int); strk = pnl_b.groupby((pnl_b != pnl_b.shift()).cumsum()).cumcount() + 1
                 max_w_s = strk[pnl_b == 1].max() if not wins.empty else 0; max_l_s = strk[pnl_b == 0].max() if not losses.empty else 0
                 df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
