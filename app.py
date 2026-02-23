@@ -126,15 +126,32 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
             market_ok = current['rsav'] >= config.get('rsav_trigger', -0.5)
             
         if active_trade:
-            sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
-            tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
-            if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "Signal Exit")
-                active_trade.exit_price = current['open'] * (1 - slippage)
+            # 1. PRE-CALCULATE TRIGGER PRICES
+            sl_price = active_trade.entry_price * (1 - config['sl_val'] / 100)
+            tp_price = active_trade.entry_price * (1 + config['tp_val'] / 100)
+            
+            # 2. CHECK TRIGGERS AGAINST DAY'S RANGE
+            sl_hit = config['use_sl'] and current['low'] <= sl_price
+            tp_hit = config['use_tp'] and current['high'] >= tp_price
+            
+            if sl_hit:
+                active_trade.exit_price = sl_price * (1 - slippage)
+                active_trade.exit_reason = "Stop Loss"
                 active_trade.exit_date = current.name
-                active_trade.exit_reason = reason
+            elif tp_hit:
+                active_trade.exit_price = tp_price * (1 - slippage)
+                active_trade.exit_reason = "Target Profit"
+                active_trade.exit_date = current.name
+            elif prev['exit_signal']:
+                active_trade.exit_price = current['open'] * (1 - slippage)
+                active_trade.exit_reason = "Signal Exit"
+                active_trade.exit_date = current.name
+            
+            # 3. FINALIZE TRADE
+            if active_trade.exit_date:
                 active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
-                trades.append(active_trade); active_trade = None
+                trades.append(active_trade)
+                active_trade = None
         elif prev['long_signal'] and market_ok:
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
