@@ -73,6 +73,14 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     df['flag_high'] = df['high'].rolling(window=3).max()
     df['flag_low'] = df['low'].rolling(window=3).min()
 
+    # --- INSERT WARMUP PROTECTION HERE ---
+    df = df.dropna().copy()
+    if df.empty: return [], df
+    
+    # Initialize columns AFTER dropping NaNs
+    df['long_signal'] = False
+    df['exit_signal'] = False
+
     # Strategy Switch Logic
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20_pk'].shift(1)) & (df['close'] > df['ema_20_pk'])
@@ -126,15 +134,32 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
             market_ok = current['rsav'] >= config.get('rsav_trigger', -0.5)
             
         if active_trade:
-            sl_hit = config['use_sl'] and current['low'] <= active_trade.entry_price * (1 - config['sl_val'] / 100)
-            tp_hit = config['use_tp'] and current['high'] >= active_trade.entry_price * (1 + config['tp_val'] / 100)
-            if sl_hit or tp_hit or prev['exit_signal']:
-                reason = "Stop Loss" if sl_hit else ("Target Profit" if tp_hit else "Signal Exit")
-                active_trade.exit_price = current['open'] * (1 - slippage)
+            # 1. PRE-CALCULATE TRIGGER PRICES
+            sl_price = active_trade.entry_price * (1 - config['sl_val'] / 100)
+            tp_price = active_trade.entry_price * (1 + config['tp_val'] / 100)
+            
+            # 2. CHECK TRIGGERS AGAINST DAY'S RANGE
+            sl_hit = config['use_sl'] and current['low'] <= sl_price
+            tp_hit = config['use_tp'] and current['high'] >= tp_price
+            
+            if sl_hit:
+                active_trade.exit_price = sl_price * (1 - slippage)
+                active_trade.exit_reason = "Stop Loss"
                 active_trade.exit_date = current.name
-                active_trade.exit_reason = reason
+            elif tp_hit:
+                active_trade.exit_price = tp_price * (1 - slippage)
+                active_trade.exit_reason = "Target Profit"
+                active_trade.exit_date = current.name
+            elif prev['exit_signal']:
+                active_trade.exit_price = current['open'] * (1 - slippage)
+                active_trade.exit_reason = "Signal Exit"
+                active_trade.exit_date = current.name
+            
+            # 3. FINALIZE TRADE
+            if active_trade.exit_date:
                 active_trade.pnl_pct = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price
-                trades.append(active_trade); active_trade = None
+                trades.append(active_trade)
+                active_trade = None
         elif prev['long_signal'] and market_ok:
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
@@ -201,7 +226,14 @@ if run_single:
                 peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
                 sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
                 rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
-                exp = (total_ret/len(df_trades)); calmar = abs(cagr/mdd) if mdd != 0 else 0.0
+                # --- VERIFIED THARP EXPECTANCY ---
+                wr = len(wins) / len(df_trades)
+                avg_w = wins['pnl_pct'].mean() if not wins.empty else 0
+                avg_l = losses['pnl_pct'].mean() if not losses.empty else 0
+                
+                # Your formula: (Win% * AvgWin) + (Loss% * AvgLoss)
+                exp = (wr * avg_w) + ((1 - wr) * avg_l) 
+                calmar = abs(cagr/mdd) if mdd != 0 else 0.0
                 pnl_b = (df_trades['pnl_pct'] > 0).astype(int); strk = pnl_b.groupby((pnl_b != pnl_b.shift()).cumsum()).cumcount() + 1
                 max_w_s = strk[pnl_b == 1].max() if not wins.empty else 0; max_l_s = strk[pnl_b == 0].max() if not losses.empty else 0
                 df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
