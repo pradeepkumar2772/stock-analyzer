@@ -116,25 +116,47 @@ start_str = st.sidebar.text_input("Start Date", value="2010-01-01")
 
 config = {'ema_fast': 20, 'ema_slow': 50, 'ema_exit': 30, 'hhv_period': 20, 'slippage_val': 0.1, 'use_slippage': True, 'sl_val': 5.0, 'use_sl': True, 'tp_val': 25.0, 'use_tp': True}
 
-# --- 4. EXECUTION & STATISTICS ---
+# --- 5. EXECUTION & STATISTICS ---
 if st.sidebar.button("🚀 Run Backtest"):
-    data = yf.download(symbol, start=start_str, auto_adjust=True)
-    if not data.empty:
-        data.columns = [str(col).lower() for col in data.columns]
-        trades, _ = run_backtest(data.copy(), symbol, config, strat_choice)
+    try:
+        # 1. Download data
+        data = yf.download(symbol, start=start_str, auto_adjust=True)
         
-        if trades:
-            df_trades = pd.DataFrame([vars(t) for t in trades])
-            df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+        if not data.empty:
+            # 2. STANDARDIZE COLUMNS BEFORE RUNNING BACKTEST
+            # This fixes the KeyError: 'close'
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            data.columns = [str(col).lower() for col in data.columns]
             
-            # --- FIX 3: VERIFIED THARP EXPECTANCY FORMULA ---
-            wins = df_trades[df_trades['pnl_pct'] > 0]
-            losses = df_trades[df_trades['pnl_pct'] <= 0]
-            wr = len(wins) / len(df_trades)
-            avg_w = wins['pnl_pct'].mean() if not wins.empty else 0
-            avg_l = losses['pnl_pct'].mean() if not losses.empty else 0
-            exp = (wr * avg_w) + ((1 - wr) * avg_l)
+            # 3. Run the engine
+            trades, processed_df = run_backtest(data.copy(), symbol, config, strat_choice)
+            
+            if trades:
+                df_trades = pd.DataFrame([vars(t) for t in trades])
+                df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
+                
+                # --- THARP EXPECTANCY ---
+                wins = df_trades[df_trades['pnl_pct'] > 0]
+                losses = df_trades[df_trades['pnl_pct'] <= 0]
+                wr = len(wins) / len(df_trades)
+                avg_w = wins['pnl_pct'].mean() if not wins.empty else 0
+                avg_l = losses['pnl_pct'].mean() if not losses.empty else 0
+                exp = (wr * avg_w) + ((1 - wr) * avg_l)
 
-            total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
-            st.metric("Expectancy (Edge)", f"{exp:.4f}")
-            st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title=f"{strat_choice} Equity Curve"))
+                total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
+                
+                # Display Results
+                st.subheader(f"Results for {symbol}")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Return", f"{total_ret:.2f}%")
+                c2.metric("Win Rate", f"{wr*100:.1f}%")
+                c3.metric("Expectancy", f"{exp:.4f}")
+                
+                st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Account Equity Curve"))
+            else:
+                st.warning("No trades found. The patterns from Nison Chapter 4 were not detected in this timeframe.")
+        else:
+            st.error("Could not fetch data. Please check the symbol or date range.")
+    except Exception as e:
+        st.error(f"Execution Error: {e}")
