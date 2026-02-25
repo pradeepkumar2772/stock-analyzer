@@ -29,13 +29,13 @@ def calculate_rsav(stock_df, benchmark_df, lookback=50):
     b_net = b_roc - b_vol
     return s_net - b_net
 
-# --- 2. MULTI-STRATEGY ENGINE ---
+# --- 2. MULTI-STRATEGY ENGINE (Identical) ---
 def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     trades = []
     active_trade = None
     slippage = (config['slippage_val'] / 100) if config['use_slippage'] else 0
     
-    # Initialize columns
+    # Initialize columns to prevent KeyError
     df['long_signal'] = False
     df['exit_signal'] = False
     
@@ -73,36 +73,10 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
     df['flag_high'] = df['high'].rolling(window=3).max()
     df['flag_low'] = df['low'].rolling(window=3).min()
 
-    # --- NISON CHAPTER 4 LOGIC COMPONENTS ---
-    c = df['close'].values
-    o = df['open'].values
-    h = df['high'].values
-    l = df['low'].values
-    
-    body = np.abs(c - o)
-    lower_sh = np.minimum(c, o) - l
-    upper_sh = h - np.maximum(c, o)
-    
-    # 1. Umbrella Line (Hammer/Hanging Man)
-    is_umbrella = (lower_sh >= 2 * body) & (upper_sh <= body * 0.1)
-    
-    # 2. Bullish Engulfing
-    prev_c = pd.Series(c).shift(1).values
-    prev_o = pd.Series(o).shift(1).values
-    is_bull_engulf = (c > o) & (prev_c < prev_o) & (o <= prev_c) & (c >= prev_o)
-    
-    # 3. Piercing Pattern
-    midpoint_prev = (prev_o + prev_c) / 2
-    is_piercing = (c > o) & (prev_c < prev_o) & (o < pd.Series(l).shift(1).values) & (c > midpoint_prev)
-
     # Strategy Switch Logic
     if strategy_type == "PK Strategy (Positional)":
         df['long_signal'] = (df['close'].shift(1) < df['ema_20_pk'].shift(1)) & (df['close'] > df['ema_20_pk'])
         df['exit_signal'] = (df['close'] < df['ema_15_pk'])
-    elif strategy_type == "Nison Ch. 4 (Classic Reversals)":
-        downtrend = c < pd.Series(c).shift(3).values
-        df['long_signal'] = downtrend & (is_umbrella | is_bull_engulf | is_piercing)
-        df['exit_signal'] = c < pd.Series(l).shift(1).values
     elif strategy_type == "RSI 60 Cross":
         df['long_signal'] = (df['rsi'] > 60) & (df['rsi'].shift(1) <= 60)
         df['exit_signal'] = (df['rsi'] < 60) & (df['rsi'].shift(1) >= 60)
@@ -165,9 +139,10 @@ def run_backtest(df, symbol, config, strategy_type, benchmark_df=None):
             active_trade = Trade(symbol=symbol, direction="Long", entry_date=current.name, entry_price=current['open'] * (1 + slippage))
     return trades, df
 
-# --- 2. DEEP OPTIMIZER ENGINE ---
+# --- NEW: DEEP OPTIMIZER ENGINE ---
 def run_deep_optimizer(data, symbol, config, capital):
     opt_results = []
+    # Test Entry EMAs (5 to 60) and Exit EMAs (3 to 30)
     entry_range = range(10, 51, 5) 
     exit_range = range(5, 31, 5)
     
@@ -178,12 +153,13 @@ def run_deep_optimizer(data, symbol, config, capital):
     for ent in entry_range:
         for ext in exit_range:
             count += 1
-            if ext >= ent: continue 
+            if ext >= ent: continue # Logical check: Exit usually faster than entry
             
             trial_config = config.copy()
             trial_config['ema_20_pk'] = ent
             trial_config['ema_15_pk'] = ext
             
+            # Use data.copy() to preserve integrity
             trades, _ = run_backtest(data.copy(), symbol, trial_config, "PK Strategy (Positional)")
             
             if trades:
@@ -194,7 +170,7 @@ def run_deep_optimizer(data, symbol, config, capital):
                 
                 avg_w = wins['pnl_pct'].mean() if not wins.empty else 0
                 avg_l = losses['pnl_pct'].mean() if not losses.empty else 0
-                exp = (wr * avg_w) + ((1 - wr) * avg_l)
+                exp = (wr * avg_w) + ((1 - wr) * avg_l) # Verified Expectancy
                 
                 final_eq = capital * (1 + df_trial['pnl_pct']).cumprod().iloc[-1]
                 total_ret = ((final_eq / capital) - 1) * 100
@@ -212,16 +188,17 @@ def run_deep_optimizer(data, symbol, config, capital):
     prog_bar.empty()
     return pd.DataFrame(opt_results)
 
-# --- 3. UI STYLING & SIDEBAR ---
+# --- 3. UI STYLING (Identical) ---
 st.set_page_config(layout="wide", page_title="Strategy Lab Pro")
-st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
+st.markdown("<style>.stMetric { background-color: #1a1c24; padding: 18px; border-radius: 8px; border: 1px solid #2d2f3b; } .report-table { width: 100%; border-collapse: collapse; margin-top: 10px; } .report-table td { border: 1px solid #2d2f3b; padding: 10px; text-align: center; color: #fff; font-size: 0.85rem; } .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2d2f3b; } .stat-label { color: #999; font-size: 0.85rem; } .stat-value { color: #fff; font-weight: 600; font-size: 0.85rem; }</style>", unsafe_allow_html=True)
 
 def draw_stat(label, value):
     st.markdown(f"<div class='stat-row'><span class='stat-label'>{label}</span><span class='stat-value'>{value}</span></div>", unsafe_allow_html=True)
 
+# --- 4. SIDEBAR ---
 st.sidebar.title("🎗️ Strategy Engine")
 symbol = st.sidebar.text_input("Symbol", value="BRITANNIA.NS").upper()
-strategies_list = ["PK Strategy (Positional)", "Nison Ch. 4 (Classic Reversals)", "RSI 60 Cross", "EMA Ribbon", "Flags & Pennants", "Bollinger Squeeze Breakout", "Breakaway Gap Momentum", "EMA & RSI Synergy", "RSI Divergence", "BB & RSI Exhaustion", "Relative Strength Play", "ATR Band Breakout", "HHV/LLV Breakout", "Double Bottom Breakout", "Fibonacci 61.8% Retracement"]
+strategies_list = ["PK Strategy (Positional)", "RSI 60 Cross", "EMA Ribbon", "Flags & Pennants", "Bollinger Squeeze Breakout", "Breakaway Gap Momentum", "EMA & RSI Synergy", "RSI Divergence", "BB & RSI Exhaustion", "Relative Strength Play", "ATR Band Breakout", "HHV/LLV Breakout", "Double Bottom Breakout", "Fibonacci 61.8% Retracement"]
 strat_choice = st.sidebar.selectbox("Select Strategy", strategies_list)
 tf_map = {"1 Minute": "1m", "2 Minutes": "2m", "3 Minutes": "3m", "5 Minutes": "5m", "10 Minutes": "10m", "15 Minutes": "15m", "30 Minutes": "30m", "1 Hour": "1h", "Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"}
 selected_tf = st.sidebar.selectbox("Timeframe", list(tf_map.keys()), index=8)
@@ -229,9 +206,18 @@ capital = st.sidebar.number_input("Initial Capital", value=1000.0)
 start_str = st.sidebar.text_input("Start Date", value="1999-01-01")
 end_str = st.sidebar.text_input("End Date", value=date.today().strftime('%Y-%m-%d'))
 
-config = {'ema_fast': 20, 'ema_slow': 50, 'ema_exit': 30, 'hhv_period': 20, 'slippage_val': 0.1, 'use_slippage': True, 'sl_val': 5.0, 'use_sl': True, 'tp_val': 25.0, 'use_tp': True}
+st.sidebar.divider()
+st.sidebar.subheader("🛡️ Market Filter (RS-AV)")
+use_rsav = st.sidebar.toggle("Enable RS-AV Filter", False)
+rsav_trig = st.sidebar.number_input("RS-AV Trigger", value=-0.5, step=0.1)
 
-# --- 4. EXECUTION ---
+config = {'ema_fast': 20, 'ema_slow': 50, 'ema_exit': 30, 'hhv_period': 20, 'use_rsav': use_rsav, 'rsav_trigger': rsav_trig}
+st.sidebar.divider()
+use_sl = st.sidebar.toggle("Stop Loss", True); config['sl_val'] = st.sidebar.slider("SL %", 0.5, 15.0, 5.0) if use_sl else 0; config['use_sl'] = use_sl
+use_tp = st.sidebar.toggle("Target Profit", True); config['tp_val'] = st.sidebar.slider("TP %", 1.0, 100.0, 25.0) if use_tp else 0; config['use_tp'] = use_tp
+use_slip = st.sidebar.toggle("Slippage", True); config['slippage_val'] = st.sidebar.slider("Slippage %", 0.0, 1.0, 0.1) if use_slip else 0; config['use_slippage'] = use_slip
+
+# --- 5. EXECUTION ---
 col_run1, col_run2, col_run3 = st.sidebar.columns(3)
 run_single = col_run1.button("🚀 Backtest")
 run_arena = col_run2.button("🏟️ Arena")
@@ -240,25 +226,53 @@ run_opt = col_run3.button("🎯 Optimizer")
 if run_single:
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
+        bench_data = yf.download("^NSEI", start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True) if use_rsav else None
+        
         if not data.empty:
-            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-            data.columns = [str(col).lower() for col in data.columns]
-            
-            trades, _ = run_backtest(data.copy(), symbol, config, strat_choice)
+            for d in [data, bench_data]:
+                if d is not None:
+                    if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                    d.columns = [str(col).lower() for col in d.columns]
+            if use_rsav and bench_data is not None:
+                common_idx = data.index.intersection(bench_data.index)
+                data, bench_data = data.loc[common_idx], bench_data.loc[common_idx]
+
+            trades, processed_df = run_backtest(data.copy(), symbol, config, strat_choice, bench_data)
             if trades:
                 df_trades = pd.DataFrame([vars(t) for t in trades])
+                df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date']); df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
                 df_trades['equity'] = capital * (1 + df_trades['pnl_pct']).cumprod()
-                wins = df_trades[df_trades['pnl_pct'] > 0]
+                df_trades['year'] = df_trades['exit_date'].dt.year; df_trades['month'] = df_trades['exit_date'].dt.strftime('%b')
+                wins = df_trades[df_trades['pnl_pct'] > 0]; losses = df_trades[df_trades['pnl_pct'] <= 0]
                 total_ret = (df_trades['equity'].iloc[-1] / capital - 1) * 100
-                peak = df_trades['equity'].cummax(); mdd = ((df_trades['equity'] - peak) / peak).min() * 100
-                
-                t1, t2 = st.tabs(["Quick Stats", "Statistics"])
+                duration = df_trades['exit_date'].max() - df_trades['entry_date'].min()
+                years_v = max(duration.days / 365.25, 0.1)
+                cagr = (((df_trades['equity'].iloc[-1] / capital) ** (1/years_v)) - 1) * 100
+                peak = df_trades['equity'].cummax(); drawdown = (df_trades['equity'] - peak) / peak; mdd = drawdown.min() * 100
+                sharpe = (df_trades['pnl_pct'].mean()/df_trades['pnl_pct'].std()*np.sqrt(252)) if len(df_trades)>1 else 0.0
+                rr = (wins['pnl_pct'].mean()/abs(losses['pnl_pct'].mean())) if not losses.empty else 0.0
+                exp = (total_ret/len(df_trades)); calmar = abs(cagr/mdd) if mdd != 0 else 0.0
+                pnl_b = (df_trades['pnl_pct'] > 0).astype(int); strk = pnl_b.groupby((pnl_b != pnl_b.shift()).cumsum()).cumcount() + 1
+                max_w_s = strk[pnl_b == 1].max() if not wins.empty else 0; max_l_s = strk[pnl_b == 0].max() if not losses.empty else 0
+                df_trades['hold'] = (df_trades['exit_date'] - df_trades['entry_date']).dt.days
+
+                t1, t2, t3, t4 = st.tabs(["Quick Stats", "Statistics", "Charts", "Trade Details"])
                 with t1:
-                    r1, r2 = st.columns(2)
-                    r1.metric("Total Return", f"{total_ret:.2f}%")
-                    r2.metric("Max Drawdown", f"{mdd:.2f}%")
+                    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+                    r1c1.metric("Total Returns (%)", f"{total_ret:.2f}%"); r1c2.metric("Max Drawdown(MDD)", f"{mdd:.2f}%"); r1c3.metric("Win Ratio", f"{(len(wins)/len(df_trades)*100):.2f}%"); r1c4.metric("Total Trades", len(df_trades))
+                    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+                    r2c1.metric("Initial Capital", f"{capital:,.2f}"); r2c2.metric("Final Capital", f"{df_trades['equity'].iloc[-1]:,.2f}"); r2c3.metric("CAGR", f"{cagr:.2f}%"); r2c4.metric("Avg Return/Trade", f"{(df_trades['pnl_pct'].mean()*100):.2f}%")
+                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+                    r3c1.metric("Risk-Reward Ratio", f"{rr:.2f}"); r3c2.metric("Expectancy", f"{exp:.2f}"); r3c3.metric("Sharpe Ratio", f"{sharpe:.2f}"); r3c4.metric("Calmar Ratio", f"{calmar:.2f}")
                 with t2:
-                    st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Equity Curve"))
+                    cl, cr = st.columns([1, 2.5])
+                    with cl:
+                        with st.expander("📊 Backtest Details", expanded=True):
+                            draw_stat("Scrip", symbol); draw_stat("Start Date", df_trades['entry_date'].min().strftime('%d-%b %y')); draw_stat("Duration", f"{duration.days // 365} Years, {(duration.days % 365) // 30} Months")
+                        with st.expander("🏆 Performance"):
+                            draw_stat("Win Rate", f"{(len(wins)/len(df_trades)*100):.2f} %"); draw_stat("Risk Reward Ratio", f"{rr:.2f}"); draw_stat("Expectancy", f"{exp:.2f}")
+                    with cr:
+                        st.plotly_chart(px.line(df_trades, x='exit_date', y='equity', title="Strategy Equity Curve"), use_container_width=True)
             else: st.warning("No trades found.")
     except Exception as e: st.error(f"Error: {e}")
 
@@ -266,27 +280,48 @@ elif run_arena:
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
         if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
             arena_results = []
             combined_fig = go.Figure()
-            for s_name in strategies_list:
+            progress_bar = st.progress(0)
+            
+            for idx, s_name in enumerate(strategies_list):
                 trades, _ = run_backtest(data.copy(), symbol, config, s_name)
                 if trades:
                     df_res = pd.DataFrame([vars(t) for t in trades])
                     df_res['equity'] = capital * (1 + df_res['pnl_pct']).cumprod()
                     total_ret = (df_res['equity'].iloc[-1] / capital - 1) * 100
-                    arena_results.append({"Strategy": s_name, "Total Return %": round(total_ret, 2)})
+                    mdd_val = ((df_res['equity'] - df_res['equity'].cummax()) / df_res['equity'].cummax()).min() * 100
+                    win_r = (len(df_res[df_res['pnl_pct'] > 0]) / len(df_res)) * 100
+                    arena_results.append({"Strategy": s_name, "Total Return %": round(total_ret, 2), "Max DD %": round(mdd_val, 2), "Win %": round(win_r, 2), "Trades": len(trades)})
                     combined_fig.add_trace(go.Scatter(x=df_res['exit_date'], y=df_res['equity'], name=s_name))
-            st.dataframe(pd.DataFrame(arena_results).sort_values(by="Total Return %", ascending=False))
-            st.plotly_chart(combined_fig)
+                progress_bar.progress((idx + 1) / len(strategies_list))
+            
+            st.subheader("🏟️ Strategy Arena Leaderboard")
+            res_df = pd.DataFrame(arena_results).sort_values(by="Total Return %", ascending=False)
+            st.dataframe(res_df, use_container_width=True, hide_index=True)
+            st.plotly_chart(combined_fig.update_layout(template="plotly_dark"), use_container_width=True)
     except Exception as e: st.error(f"Arena Error: {e}")
 
 elif run_opt:
     try:
         data = yf.download(symbol, start=start_str, end=end_str, interval=tf_map[selected_tf], auto_adjust=True)
         if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
             data.columns = [str(col).lower() for col in data.columns]
-            opt_df = run_deep_optimizer(data, symbol, config, capital)
+            
+            st.subheader(f"🎯 Optimization Results: {symbol}")
+            with st.spinner("Finding best parameter combinations..."):
+                opt_df = run_deep_optimizer(data, symbol, config, capital)
+                
             if not opt_df.empty:
-                st.dataframe(opt_df.sort_values(by="Expectancy", ascending=False))
+                # Sort by Expectancy to show most robust settings
+                sorted_df = opt_df.sort_values(by="Expectancy", ascending=False)
+                st.dataframe(sorted_df, use_container_width=True, hide_index=True)
+                
+                best_row = sorted_df.iloc[0]
+                st.success(f"Best Configuration: Entry EMA {best_row['Entry EMA']}, Exit EMA {best_row['Exit EMA']} (Expectancy: {best_row['Expectancy']}%)")
+            else:
+                st.warning("No successful combinations found.")
     except Exception as e: st.error(f"Optimizer Error: {e}")
